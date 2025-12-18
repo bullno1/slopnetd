@@ -62,22 +62,7 @@ init(Req, callback) ->
 				ErrUsername
 		end,
 
-		{ok, #{
-			ttl := TokenTTL,
-			keys := Keys,
-			default_kid := Kid,
-			signing_algorithm := SigningAlg
-		}} = application:get_env(slopnetd, jwt),
-		Claims = #{
-			~"sub" => <<Username/binary, "@itch.io">>,
-			~"exp" => erlang:system_time(second) + TokenTTL
-		},
-		SigningOpts = #{
-			key => maps:get(Kid, Keys),
-			kid => Kid,
-			algorithm => SigningAlg
-		},
-		Cookie = jwt:issue(Claims,SigningOpts),
+		Cookie = snetd_auth:issue_token(<<Username/binary, "@itch.io">>),
 		redirect(Req, ~"/succeeded", [{~"data", Cookie}], State)
 	else
 		{error, game_not_owned} ->

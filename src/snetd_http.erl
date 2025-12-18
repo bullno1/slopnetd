@@ -30,6 +30,7 @@ load_routes() ->
 routes() ->
 	snetd_http_index:routes()
 	++ snetd_auth_itchio:routes()
+	++ snetd_auth_cookie:routes()
 	++ [
 		{"/assets/[...]", cowboy_static, {priv_dir, slopnetd, "www/assets"}}
 	].
