@@ -1,4 +1,4 @@
--module(snet_http).
+-module(snetd_http).
 -export([start/0, stop/0]).
 -export([on_reload/0]).
 -on_reload(on_reload/0).
@@ -28,6 +28,8 @@ load_routes() ->
 	persistent_term:put(?MODULE, Dispatch).
 
 routes() ->
-	[
-		{"/", snet_http_index, []}
+	snetd_http_index:routes()
+	++ snetd_auth_itchio:routes()
+	++ [
+		{"/assets/[...]", cowboy_static, {priv_dir, slopnetd, "www/assets"}}
 	].

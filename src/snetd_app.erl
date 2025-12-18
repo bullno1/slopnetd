@@ -3,11 +3,13 @@
 -export([start/2, stop/1]).
 
 start(_StartType, _StartArgs) ->
-	snet_http:start(),
+	snetd_http:start(),
+	inets:start(httpc, [{profile, snetd_itchio}]),
 	snetd_sup:start_link().
 
 stop(_State) ->
-	snet_http:stop(),
+	inets:stop(httpc, snetd_itchio),
+	snetd_http:stop(),
 	ok.
 
 %% internal functions

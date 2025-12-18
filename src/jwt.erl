@@ -78,7 +78,7 @@ decode(Token, #{ keys := Keys, algorithms := Algorithms } = Options) ->
 verify_hs256(Content, Signature, Key) ->
 	crypto:hash_equals(sign_hs256(Content, Key), Signature).
 
--spec sign_hs256(binary(), binary()) -> boolean().
+-spec sign_hs256(binary(), binary()) -> binary().
 sign_hs256(Content, Key) ->
 	crypto:mac(hmac, sha3_256, Key, Content).
 
