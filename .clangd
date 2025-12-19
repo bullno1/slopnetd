@@ -1,0 +1,9 @@
+---
+CompileFlags:
+  Add:
+   - -xc
+   - -Wall
+   - -Werror
+   - -pedantic
+   - -std=c11
+   - -I/usr/lib/erlang/usr/include

@@ -1,0 +1,8 @@
+#!/bin/sh -e
+
+BUILD_DIR="_build/native"
+
+if [ -d ${BUILD_DIR} ]
+then
+	cmake --build ${BUILD_DIR} --target clean
+fi
