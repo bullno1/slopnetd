@@ -63,12 +63,12 @@ init(Req, callback) ->
 		end,
 
 		Cookie = snetd_auth:issue_token(<<Username/binary, "@itch.io">>),
-		redirect(Req, ~"/succeeded", [{~"data", Cookie}], State)
+		redirect(Req, ~"/finish", [{~"data", Cookie}, {~"success", ~"1"}], State)
 	else
 		{error, game_not_owned} ->
-			redirect(Req, ~"/failed", [{~"data", ~"game_not_owned"}], State);
+			redirect(Req, ~"/finish", [{~"data", ~"game_not_owned"}, {~"success", ~"0"}], State);
 		{error, _Reason} ->
-			redirect(Req, ~"/failed", [{~"data", ~"internal_error"}], State)
+			redirect(Req, ~"/finish", [{~"data", ~"internal_error"}, {~"success", ~"0"}], State)
 	end;
 init(Req, State) ->
 	{ok, cowboy_req:reply(400, Req), State}.
