@@ -55,13 +55,13 @@ decode(Token, #{ keys := Keys, algorithms := Algorithms } = Options) ->
 			{ok, _} = KeyResult -> KeyResult;
 			error -> {error, invalid_kid}
 		end,
-		{ok, VerifYFun} ?= case maps:find(Alg, Algorithms) of
+		{ok, VerifyFun} ?= case maps:find(Alg, Algorithms) of
 			{ok, _} = AlgResult -> AlgResult;
 			error -> {error, invalid_alg}
 		end,
 		{ok, ClaimsBin} ?= b64_decode(ClaimsB64),
 		{ok, SignatureBin} ?= b64_decode(SignatureB64),
-		ok ?= case VerifYFun(<<HeaderB64/binary, $., ClaimsB64/binary>>, SignatureBin, Key) of
+		ok ?= case VerifyFun(<<HeaderB64/binary, $., ClaimsB64/binary>>, SignatureBin, Key) of
 			true -> ok;
 			false -> {error, invalid_sig}
 		end,

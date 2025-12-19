@@ -20,8 +20,6 @@ init(#{ method := ~"POST" } = Req, _) ->
 			{more, _, Req2In} ->
 				{return, cowboy_req:reply(400, Req2In)}
 		end,
-		io:format("|~p|", [size(Body)]),
-		io:format("|~p|", [cowboy_req:body_length(Req)]),
 		{ok, UserId} ?= case snetd_auth:verify_token(Body) of
 			{ok, _} = Verified ->
 				Verified;

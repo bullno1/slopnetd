@@ -1,0 +1,4 @@
+#!/bin/sh -e
+
+rebar3 compile
+rebar3 experimental manifest --to build_info.json

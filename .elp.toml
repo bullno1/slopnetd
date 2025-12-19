@@ -1,2 +1,5 @@
-[rebar]
-profile = "default"
+[build_info]
+file = "build_info.json"
+
+[eqwalizer]
+enable_all = false
