@@ -19,3 +19,4 @@ logs
 rebar3.crashdump
 *~
 build_info.json
+/priv/bin
