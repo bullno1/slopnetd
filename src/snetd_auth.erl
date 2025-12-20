@@ -42,9 +42,13 @@ verify_token(Cookie) ->
 		{error, _} = Err -> Err
 	end.
 
--spec auth_req(cowboy_req:req()) -> {ok, user()} | {error, term()}.
+-spec auth_req(cowboy_req:req()) -> {ok, user()} | {error, {unauthorized, term()}}.
 auth_req(Req) ->
 	case cowboy_req:parse_header(~"authorization", Req) of
-		{bearer, Token} -> verify_token(Token);
-		_ -> {error, unauthorized}
+		{bearer, Token} ->
+			case verify_token(Token) of
+				{ok, _} = Authorized -> Authorized;
+				{error, Reason} -> {error, {unauthorized, Reason}}
+			end;
+		_ -> {error, {unauthorized, missing_header}}
 	end.
