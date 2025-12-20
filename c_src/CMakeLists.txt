@@ -16,3 +16,22 @@ if (NOT MSVC)
 		-Wl,--no-whole-archive
 	)
 endif ()
+
+add_executable(cn_server "cn_server.c")
+target_link_libraries(cn_server PRIVATE cute_net)
+find_library(MATH_LIBRARY m)
+if(MATH_LIBRARY)
+    target_link_libraries(cn_server PUBLIC ${MATH_LIBRARY})
+endif()
+
+add_library(snetd_relay SHARED "snetd_relay.c")
+set_target_properties(snetd_relay PROPERTIES
+    PREFIX ""
+)
+set_target_properties(snetd_relay PROPERTIES C_VISIBILITY_PRESET hidden)
+if (NOT MSVC)
+	target_link_options(snetd_relay PRIVATE
+		-Wl,--exclude-libs,ALL
+		-Wl,--no-whole-archive
+	)
+endif ()

@@ -23,7 +23,9 @@
 -record(state, {
 	creator :: binary(),
 	params :: params(),
-	%num_players = 0 :: non_neg_integer(),
+	num_players = 0 :: non_neg_integer(),
+	key_pair :: {cn_crypto:public_key(), cn_crypto:secret_key()},
+	cn_server :: port(),
 	connect_timeout_ms :: pos_integer(),
 	shutdown_timer :: reference() | undefined
 }).
@@ -42,8 +44,20 @@ info(Server) ->
 	gen_server:call(Server, info).
 
 -spec make_join_token(binary()) -> binary().
-make_join_token(_GameName) ->
-	~"".
+make_join_token(GameName) ->
+	{ok, #{ join_token_ttl_s := TTL }} = application:get_env(slopnetd, game),
+	{ok, #{ signing_algorithm := SigningAlg }} = application:get_env(slopnetd, jwt),
+	#{ preferred_key := {Kid, Key} } = keymaker:info({slopnetd, jwt}),
+	Claims = #{
+		~"game" => GameName,
+		~"exp" => erlang:system_time(second) + TTL
+	},
+	SigningOpts = #{
+		kid => Kid,
+		key => Key,
+		algorithm => SigningAlg
+	},
+	jwt:issue(Claims, SigningOpts).
 
 %% gen_server
 
@@ -54,14 +68,21 @@ init({
 	 } = Params
 }) ->
 	{ok, #{
+		module := Module,
 		connect_timeout_ms := ConnectTimeoutMs
 	}} = application:get_env(slopnetd, game),
 	ShutdownTimer = erlang:start_timer(ConnectTimeoutMs, self(), shutdown),
+
+	CnServer = spawn_cn_server(Module),
+	{PublicKey, SecretKey} = KeyPair = cn_crypto:make_keypair(),
+	port_command(CnServer, <<PublicKey/binary, SecretKey/binary>>),
 
 	_ = Visibility =:= public andalso lproc:subscribe(?MODULE, {UserId, Data}),
 	{ok, #state{
 		creator = UserId,
 		params = Params,
+		cn_server = CnServer,
+		key_pair = KeyPair,
 		connect_timeout_ms = ConnectTimeoutMs,
 		shutdown_timer = ShutdownTimer
 	}}.
@@ -92,5 +113,32 @@ handle_info(
 	#state{ shutdown_timer = TimerRef } = State
 ) ->
 	{stop, shutdown, State};
-handle_info(_, State) ->
+handle_info(
+	{Port, {exit_status, Status}},
+	#state{ cn_server = Port } = State
+) ->
+	?LOG_WARNING(#{ what => server_terminated, status => Status }),
+	{stop, shutdown, State};
+handle_info(Msg, State) ->
+	?LOG_WARNING(#{ what => unknown_message, message => Msg }),
 	{noreply, State}.
+
+%% Private
+
+spawn_cn_server({Path, _Opts}) ->
+	erlang:open_port(
+		{spawn_executable, filename:join(code:priv_dir(slopnetd), "bin/cn_server")},
+		[ {packet, 2}
+		, {args, [resolve_path(Path)]}
+		, exit_status
+		, nouse_stdio
+		%, overlapped_io
+		, binary
+		, hide
+		]
+	).
+
+resolve_path(Path) when is_list(Path) ->
+	Path;
+resolve_path({priv_dir, App, RelPath}) ->
+	filename:join(code:priv_dir(App), RelPath).
