@@ -8,17 +8,16 @@
 issue_token(#{ id := UserId }) ->
 	{ok, #{
 		ttl := TokenTTL,
-		keys := Keys,
-		default_kid := Kid,
 		signing_algorithm := SigningAlg
 	}} = application:get_env(slopnetd, jwt),
+	#{ preferred_key := {Kid, Key} } = keymaker:info({slopnetd, jwt}),
 	Claims = #{
 		~"sub" => UserId,
 		~"exp" => erlang:system_time(second) + TokenTTL
 	},
 	SigningOpts = #{
-		key => maps:get(Kid, Keys),
 		kid => Kid,
+		key => Key,
 		algorithm => SigningAlg
 	},
 	jwt:issue(Claims, SigningOpts).
@@ -26,9 +25,9 @@ issue_token(#{ id := UserId }) ->
 -spec verify_token(binary()) -> {ok, user()} | {error, term()}.
 verify_token(Cookie) ->
 	{ok, #{
-		keys := Keys,
 		verify_algorithms := Algorithms
 	}} = application:get_env(slopnetd, jwt),
+	#{ keys := Keys } = keymaker:info({slopnetd, jwt}),
 	VerifyOptions = #{
 		keys => Keys,
 		algorithms => Algorithms,

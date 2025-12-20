@@ -1,6 +1,10 @@
 -module(snetd_game).
 -behaviour(gen_server).
--export([start_link/2, info/1]).
+-export([
+	start_link/2,
+	info/1,
+	make_join_token/1
+]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 -export_type([params/0, info/0]).
 -include_lib("kernel/include/logger.hrl").
@@ -20,7 +24,7 @@
 	creator :: binary(),
 	params :: params(),
 	%num_players = 0 :: non_neg_integer(),
-	join_timeout :: pos_integer(),
+	connect_timeout_ms :: pos_integer(),
 	shutdown_timer :: reference() | undefined
 }).
 
@@ -37,6 +41,10 @@ start_link(UserId, Params) ->
 info(Server) ->
 	gen_server:call(Server, info).
 
+-spec make_join_token(binary()) -> binary().
+make_join_token(_GameName) ->
+	~"".
+
 %% gen_server
 
 init({
@@ -46,15 +54,15 @@ init({
 	 } = Params
 }) ->
 	{ok, #{
-		join_timeout := JoinTimeout
+		connect_timeout_ms := ConnectTimeoutMs
 	}} = application:get_env(slopnetd, game),
-	ShutdownTimer = erlang:start_timer(JoinTimeout, self(), shutdown),
+	ShutdownTimer = erlang:start_timer(ConnectTimeoutMs, self(), shutdown),
 
 	_ = Visibility =:= public andalso lproc:subscribe(?MODULE, {UserId, Data}),
 	{ok, #state{
 		creator = UserId,
 		params = Params,
-		join_timeout = JoinTimeout,
+		connect_timeout_ms = ConnectTimeoutMs,
 		shutdown_timer = ShutdownTimer
 	}}.
 
@@ -66,7 +74,12 @@ handle_call(
 		params = #{ data := Data }
 	} = State
 ) ->
-	{reply, #{ join_token => ~"", creator => Creator, data => Data }, State};
+	Result = #{
+		join_token => make_join_token(Creator),
+		creator => Creator,
+		data => Data
+	},
+	{reply, Result, State};
 handle_call(Req, _From, State) ->
 	?LOG_WARNING(#{ what => unknown_call, request => Req }),
 	{noreply, State}.

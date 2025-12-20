@@ -14,10 +14,6 @@
 	{env, [
 		{jwt, #{
 			ttl => 604800,
-			keys => #{
-				~"0" => ~"changepls"
-			},
-			default_kid => ~"0",
 			signing_algorithm => { ~"HS256", fun jwt:sign_hs256/2 },
 			verify_algorithms => #{ ~"HS256" => fun jwt:verify_hs256/3 }
 		}},
@@ -26,9 +22,19 @@
 			game_id => ~"",
 			redirect_uri => ~"https://snet-dev.bullno1.com/snet/auth/itchio/callback"
 		}},
+		{keymaker, #{
+			path => "./_build/default/keys",
+			stores => #{
+				{slopnetd, jwt} => #{
+					ttl_s => 604800,
+					generator => { fun crypto:strong_rand_bytes/1, 16 }
+				}
+			}
+		}},
 		{game, #{
 			module => {snetd_relay, []},
-			join_timeout => 5000
+			join_token_ttl_s => 120,
+			connect_timeout_ms => 10000
 		}}
 	]},
     {modules, []}
