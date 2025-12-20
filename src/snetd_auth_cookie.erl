@@ -20,13 +20,13 @@ init(#{ method := ~"POST" } = Req, _) ->
 			{more, _, Req2In} ->
 				{return, cowboy_req:reply(400, Req2In)}
 		end,
-		{ok, UserId} ?= case snetd_auth:verify_token(Body) of
+		{ok, User} ?= case snetd_auth:verify_token(Body) of
 			{ok, _} = Verified ->
 				Verified;
 			{error, _} ->
 				{return, cowboy_req:reply(400, Req2)}
 		end,
-		Cookie = snetd_auth:issue_token(UserId),
+		Cookie = snetd_auth:issue_token(User),
 		Req3 = cowboy_req:reply(200, Headers, Cookie, Req2),
 		{ok, Req3, []}
 	else

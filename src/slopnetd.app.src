@@ -25,6 +25,10 @@
 			client_id => ~"",
 			game_id => ~"",
 			redirect_uri => ~"https://snet-dev.bullno1.com/snet/auth/itchio/callback"
+		}},
+		{game, #{
+			module => {snetd_relay, []},
+			join_timeout => 5000
 		}}
 	]},
     {modules, []}

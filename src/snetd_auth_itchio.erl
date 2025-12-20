@@ -62,7 +62,9 @@ init(Req, callback) ->
 				ErrUsername
 		end,
 
-		Cookie = snetd_auth:issue_token(<<Username/binary, "@itch.io">>),
+		Cookie = snetd_auth:issue_token(#{
+			id => <<Username/binary, "@itch.io">>
+		}),
 		redirect(Req, ~"/finish", [{~"data", Cookie}, {~"success", ~"1"}], State)
 	else
 		{error, game_not_owned} ->

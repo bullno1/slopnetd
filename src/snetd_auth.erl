@@ -1,8 +1,11 @@
 -module(snetd_auth).
--export([issue_token/1, verify_token/1]).
+-export([issue_token/1, verify_token/1, auth_req/1]).
+-export_type([user/0]).
 
--spec issue_token(binary()) -> binary().
-issue_token(UserId) ->
+-type user() :: #{ id := binary() }.
+
+-spec issue_token(user()) -> binary().
+issue_token(#{ id := UserId }) ->
 	{ok, #{
 		ttl := TokenTTL,
 		keys := Keys,
@@ -18,9 +21,9 @@ issue_token(UserId) ->
 		kid => Kid,
 		algorithm => SigningAlg
 	},
-	jwt:issue(Claims,SigningOpts).
+	jwt:issue(Claims, SigningOpts).
 
--spec verify_token(binary()) -> {ok, UserId :: binary()} | {error, term()}.
+-spec verify_token(binary()) -> {ok, user()} | {error, term()}.
 verify_token(Cookie) ->
 	{ok, #{
 		keys := Keys,
@@ -35,6 +38,13 @@ verify_token(Cookie) ->
 		]
 	},
 	case jwt:decode(Cookie, VerifyOptions) of
-		{ok, #{~"sub" := UserId}} -> {ok, UserId};
+		{ok, #{~"sub" := UserId}} -> {ok, #{ id => UserId }};
 		{error, _} = Err -> Err
+	end.
+
+-spec auth_req(cowboy_req:req()) -> {ok, user()} | {error, term()}.
+auth_req(Req) ->
+	case cowboy_req:parse_header(~"authorization", Req) of
+		{bearer, Token} -> verify_token(Token);
+		_ -> {error, unauthorized}
 	end.
