@@ -14,12 +14,7 @@ init(#{ method := ~"POST" } = Req, _) ->
 	Headers = #{ ~"content-type" => ~"text/plain" },
 	maybe
 		BodyOpts = #{ length => 2048, period => 5000 },
-		{ok, Body, Req2} ?= case cowboy_req:read_body(Req, BodyOpts) of
-			{ok, _, _} = ReadBody ->
-				ReadBody;
-			{more, _, Req2In} ->
-				{return, cowboy_req:reply(400, Req2In)}
-		end,
+		{ok, Body, Req2} ?= snetd_utils:read_body(Req, BodyOpts),
 		{ok, User} ?= case snetd_auth:verify_token(Body) of
 			{ok, _} = Verified ->
 				Verified;
@@ -30,8 +25,7 @@ init(#{ method := ~"POST" } = Req, _) ->
 		Req3 = cowboy_req:reply(200, Headers, Cookie, Req2),
 		{ok, Req3, []}
 	else
-		{return, ReturnReq} -> {ok, ReturnReq, []};
-		{error, _} -> {ok, cowboy_req:reply(500, Req), []}
+		EarlyReturn -> snetd_utils:handle_early_return(EarlyReturn, Req)
 	end;
 init(Req, State) ->
 	{ok, cowboy_req:reply(400, Req), State}.

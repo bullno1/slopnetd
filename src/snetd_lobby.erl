@@ -17,8 +17,8 @@ init(Req, create) ->
 	maybe
 		{ok, #{ id := UserId }} ?= snetd_auth:auth_req(Req),
 		BodyOpts = #{ length => 1024, period => 5000 },
-		{ok, Body, Req2} ?= snetd_utils:read_body(Req, BodyOpts),
-		{ok, GameParams} ?= try json:decode(Body) of
+		{ok, Body, Req2} ?= snetd_utils:read_body_json(Req, BodyOpts),
+		{ok, GameParams} ?= case Body of
 			#{ ~"visibility" := Visibility
 			 , ~"max_num_players" := MaxNumPlayers
 			 } = GameParamsIn when
@@ -36,9 +36,6 @@ init(Req, create) ->
 						{return, cowboy_req:reply(400, Req2)}
 				end;
 			_ ->
-				{return, cowboy_req:reply(400, Req2)}
-		catch
-			error:_ ->
 				{return, cowboy_req:reply(400, Req2)}
 		end,
 		{ok, GamePid} ?= snetd_game_sup:start_game(UserId, GameParams),
