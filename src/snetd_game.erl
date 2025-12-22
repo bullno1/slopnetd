@@ -3,11 +3,18 @@
 -export([
 	start_link/2,
 	info/1,
-	make_join_token/1
+	make_join_token/1,
+	decode_join_token/1,
+	request_connect_token/2
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 -export_type([params/0, info/0]).
 -include_lib("kernel/include/logger.hrl").
+
+-define(PORT_CMD_REQUEST_CONNECT_TOKEN, 0).
+
+-define(PORT_MSG_LOG, 0).
+-define(PORT_MSG_CONNECT_TOKEN, 1).
 
 -type params() :: #{
 	visibility := public | private,
@@ -23,11 +30,7 @@
 -record(state, {
 	creator :: binary(),
 	params :: params(),
-	num_players = 0 :: non_neg_integer(),
-	key_pair :: {cn_crypto:public_key(), cn_crypto:secret_key()},
-	cn_server :: port(),
-	connect_timeout_ms :: pos_integer(),
-	shutdown_timer :: reference() | undefined
+	cn_server :: port()
 }).
 
 %% Public
@@ -59,32 +62,67 @@ make_join_token(GameName) ->
 	},
 	jwt:issue(Claims, SigningOpts).
 
+-spec decode_join_token(binary()) -> {ok, map()} | {error, term()}.
+decode_join_token(Token) ->
+	{ok, #{ verify_algorithms := Algorithms }} = application:get_env(slopnetd, jwt),
+	#{ keys := Keys } = keymaker:info({slopnetd, jwt}),
+	VerifyOptions = #{
+		keys => Keys,
+		algorithms => Algorithms,
+		validators => [
+			jwt:validate_exp(),
+			{ ~"game", fun is_binary/1 }
+		]
+	},
+	jwt:decode(Token, VerifyOptions).
+
+-spec request_connect_token(binary(), binary()) -> {ok, binary()} | {error, binary()}.
+request_connect_token(Game, Player) ->
+	gen_server:call(
+		{via, lproc, {?MODULE, Game}},
+		{request_connect_token, Player}
+	).
+
 %% gen_server
 
 init({
 	UserId,
 	#{ visibility := Visibility
 	 , data := Data
+	 , max_num_players := MaxNumPlayers
 	 } = Params
 }) ->
 	{ok, #{
-		module := Module,
-		connect_timeout_ms := ConnectTimeoutMs
+		module := {ModulePath, _ModuleExtra},
+		connect_timeout_s := ConnectTimeoutS
 	}} = application:get_env(slopnetd, game),
-	ShutdownTimer = erlang:start_timer(ConnectTimeoutMs, self(), shutdown),
 
-	CnServer = spawn_cn_server(Module),
-	{PublicKey, SecretKey} = KeyPair = cn_crypto:make_keypair(),
-	port_command(CnServer, <<PublicKey/binary, SecretKey/binary>>),
 
+	{ok, Addresses} = inet:getifaddrs(),
+	Addrs = [proplists:get_value(addr, Props) || {_Interface, Props} <- Addresses],
+
+	CnServer = erlang:open_port(
+		{spawn_executable, filename:join(code:priv_dir(slopnetd), "bin/cn_server")},
+		[ {packet, 2}
+		, {args, [
+			"--created-by", UserId,
+			"--connect-timeout-s", integer_to_binary(ConnectTimeoutS),
+			"--max-num-players", integer_to_binary(MaxNumPlayers)
+		  ] ++ lists:append([["--server-address",  inet:ntoa(Addr)] || Addr <- Addrs ])
+		    ++ [resolve_module_path(ModulePath)]
+		  }
+		, exit_status
+		, nouse_stdio
+		%, overlapped_io
+		, binary
+		, hide
+		]
+	),
 	_ = Visibility =:= public andalso lproc:subscribe(?MODULE, {UserId, Data}),
 	{ok, #state{
 		creator = UserId,
 		params = Params,
-		cn_server = CnServer,
-		key_pair = KeyPair,
-		connect_timeout_ms = ConnectTimeoutMs,
-		shutdown_timer = ShutdownTimer
+		cn_server = CnServer
 	}}.
 
 handle_call(
@@ -101,6 +139,20 @@ handle_call(
 		data => Data
 	},
 	{reply, Result, State};
+handle_call(
+	{request_connect_token, Username},
+	_From,
+	#state{cn_server = CnServer} = State
+) ->
+	port_command(CnServer, <<?PORT_CMD_REQUEST_CONNECT_TOKEN, Username/binary, 0>>),
+	receive
+		{CnServer, {data, <<?PORT_MSG_CONNECT_TOKEN, 0, Reason/binary>>}} ->
+			{reply, {error, Reason}, State};
+		{CnServer, {data, <<?PORT_MSG_CONNECT_TOKEN, 1, Token/binary>>}} ->
+			{reply, {ok, Token}, State}
+	after 5000 ->
+		exit(port_timeout)
+	end;
 handle_call(Req, _From, State) ->
 	?LOG_WARNING(#{ what => unknown_call, request => Req }),
 	{noreply, State}.
@@ -108,16 +160,13 @@ handle_call(Req, _From, State) ->
 handle_cast(_Req, State) ->
 	{noreply, State}.
 
-handle_info(
-	{timeout, TimerRef, shutdown},
-	#state{ shutdown_timer = TimerRef } = State
-) ->
-	{stop, shutdown, State};
+handle_info({Port, {data, PortMessage}}, #state{ cn_server = Port } = State) ->
+	{noreply, handle_port_message(PortMessage, State)};
 handle_info(
 	{Port, {exit_status, Status}},
 	#state{ cn_server = Port } = State
 ) ->
-	?LOG_WARNING(#{ what => server_terminated, status => Status }),
+	?LOG_INFO(#{ what => server_terminated, status => Status }),
 	{stop, shutdown, State};
 handle_info(Msg, State) ->
 	?LOG_WARNING(#{ what => unknown_message, message => Msg }),
@@ -125,20 +174,11 @@ handle_info(Msg, State) ->
 
 %% Private
 
-spawn_cn_server({Path, _Opts}) ->
-	erlang:open_port(
-		{spawn_executable, filename:join(code:priv_dir(slopnetd), "bin/cn_server")},
-		[ {packet, 2}
-		, {args, [resolve_path(Path)]}
-		, exit_status
-		, nouse_stdio
-		%, overlapped_io
-		, binary
-		, hide
-		]
-	).
-
-resolve_path(Path) when is_list(Path) ->
+resolve_module_path(Path) when is_list(Path) ->
 	Path;
-resolve_path({priv_dir, App, RelPath}) ->
+resolve_module_path({priv_dir, App, RelPath}) ->
 	filename:join(code:priv_dir(App), RelPath).
+
+handle_port_message(<<?PORT_MSG_LOG, Log/binary>>, State) ->
+	?LOG_DEBUG(#{ what => server_log, message => Log }),
+	State.

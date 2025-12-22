@@ -1,6 +1,7 @@
-#define _GNU_SOURCE
 #include "sokol_time.h"
 #include "slopnetd.h"
+#include "barg.h"
+#include "ckit.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,16 +22,50 @@
 #pragma clang diagnostic pop
 #endif
 
+#define SNETD_MAX_PLAYERS 32
+#define SNETD_MAX_NUM_ADDRESSES 16
+
+typedef char endpoint_str_t[sizeof("256.256.256.256:65536")];
+
 typedef struct {
 	char* ptr;
 	int size;
 } buf_t;
 
+typedef enum {
+	TRANSPORT_TYPE_CUTE_NET,
+	TRANSPORT_TYPE_WEBTRANSPORT,
+} transport_type_t;
+
+typedef struct {
+	const char* username;
+	transport_type_t tranport_type;
+	int transport_handle;
+} player_info_t;
+
 typedef struct {
 	snetd_env_t env;
 	cn_server_t* server;
 	bool should_run;
+
+	bool allow_join;
+	const char* rejection_reason;
+
+	player_info_t players[SNETD_MAX_PLAYERS];
 } snetd_env_impl_t;
+
+typedef enum {
+	REQUEST_CONNECT_TOKEN,
+} request_message_type_t;
+
+typedef enum {
+	CONTROL_LOG_MESSAGE,
+	CONTROL_CONNECT_TOKEN,
+} control_message_type_t;
+
+typedef struct {
+	uint16_t port;
+} init_done_t;
 
 static void
 ensure_buf(buf_t* buf, int size) {
@@ -53,18 +88,18 @@ read_exactly(char* buf, int len) {
 	return true;
 }
 
-/*static bool*/
-/*write_exactly(const char* buf, int len) {*/
-	/*while (len > 0) {*/
-		/*int bytes_written = write(4, buf, len);*/
-		/*if (bytes_written <= 0) { return false; }*/
+static bool
+write_exactly(const char* buf, int len) {
+	while (len > 0) {
+		int bytes_written = write(4, buf, len);
+		if (bytes_written <= 0) { return false; }
 
-		/*buf += bytes_written;*/
-		/*len -= bytes_written;*/
-	/*}*/
+		buf += bytes_written;
+		len -= bytes_written;
+	}
 
-	/*return true;*/
-/*}*/
+	return true;
+}
 
 static int
 recv_cmd(buf_t* buf) {
@@ -76,6 +111,28 @@ recv_cmd(buf_t* buf) {
 	if (!read_exactly(buf->ptr, len)) { return 0; }
 
 	return len;
+}
+
+static bool
+send_control_header(control_message_type_t type, int payload_size) {
+	uint16_t size = payload_size + 1;
+	char hdr[3] = { (uint8_t)(size >> 8), (uint8_t)(size & 0xff), (uint8_t)type };
+	return write_exactly(hdr, sizeof(hdr));
+}
+
+static inline bool
+send_payload(const void* payload, int payload_size) {
+	return write_exactly(payload, payload_size);
+}
+
+// The cn_server wrapper and the snetd_game are always updated together so we can just
+// send a struct
+static bool
+send_control(control_message_type_t type, const void* payload, int payload_size) {
+	if (!send_control_header(type, payload_size)) { return false; }
+	if (!send_payload(payload, payload_size)) { return false; }
+
+	return true;
 }
 
 static void*
@@ -90,7 +147,7 @@ snetd_env_realloc_impl(snetd_env_t* env, void* ptr, size_t size) {
 
 static void
 snetd_env_log_impl(snetd_env_t* env, const char* message) {
-	fprintf(stderr, "%s\n", message);
+	send_control(CONTROL_LOG_MESSAGE, message, strlen(message));
 }
 
 static void
@@ -112,6 +169,19 @@ snetd_env_terminate_impl(snetd_env_t* env) {
 }
 
 static void
+snetd_env_allow_join_impl(snetd_env_t* env) {
+	snetd_env_impl_t* impl = (snetd_env_impl_t*)env;
+	impl->allow_join = true;
+}
+
+static void
+snetd_env_forbid_join_impl(snetd_env_t* env, const char* reason) {
+	snetd_env_impl_t* impl = (snetd_env_impl_t*)env;
+	impl->allow_join = false;
+	impl->rejection_reason = reason;
+}
+
+static void
 update_server(cn_server_t* server, uint64_t* timer, snetd_t* snetd, void* snetd_ctx) {
 	cn_server_update(server, stm_sec(stm_laptime(timer)), time(NULL));
 
@@ -121,13 +191,13 @@ update_server(cn_server_t* server, uint64_t* timer, snetd_t* snetd, void* snetd_
 			case CN_SERVER_EVENT_TYPE_NEW_CONNECTION:
 				snetd->event(snetd_ctx, &(snetd_event_t){
 					.type = SNETD_EVENT_PLAYER_JOINED,
-					.player_joined = { .index = event.u.new_connection.client_index },
+					.player_joined = { .player_index = event.u.new_connection.client_index },
 				});
 				break;
 			case CN_SERVER_EVENT_TYPE_DISCONNECTED:
 				snetd->event(snetd_ctx, &(snetd_event_t){
 					.type = SNETD_EVENT_PLAYER_LEFT,
-					.player_left = { .index = event.u.disconnected.client_index },
+					.player_left = { .player_index = event.u.disconnected.client_index },
 				});
 				break;
 			case CN_SERVER_EVENT_TYPE_PAYLOAD_PACKET:
@@ -147,68 +217,166 @@ update_server(cn_server_t* server, uint64_t* timer, snetd_t* snetd, void* snetd_
 
 int
 main(int argc, const char* argv[]) {
+	snetd_game_options_t options = { 0 };
+	int port = 0;
+	int connect_timeout_s = 10;
+	int int_broadcast_rate = 20;
+	int int_tick_rate = 30;
+
+	const char* addresses[SNETD_MAX_NUM_ADDRESSES] = { "127.0.0.1" };
+	barg_array_opts_t addresses_barg = {
+		.element_parser = barg_str(&addresses[0]),
+		.element_size = sizeof(addresses[0]),
+		.max_num_elements = sizeof(addresses) / sizeof(addresses[0]),
+	};
+
+	barg_opt_t opts[] = {
+		{
+			.name = "created-by",
+			.value_name = "username",
+			.parser = barg_str(&options.created_by),
+			.summary = "Name of the user who created the game",
+		},
+		{
+			.name = "port",
+			.parser = barg_int(&port),
+			.summary = "Port to listen on",
+			.description = "Default value: 0"
+		},
+		{
+			.name = "creation-data",
+			.parser = barg_str(&options.creation_data),
+			.summary = "User-submitted data",
+		},
+		{
+			.name = "extra-data",
+			.parser = barg_str(&options.extra_data),
+			.summary = "Server-configured extra data",
+		},
+		{
+			.name = "server-address",
+			.parser = barg_array(&addresses_barg),
+			.repeatable = true,
+			.summary = "Public address for the client",
+		},
+		{
+			.name = "broadcast-rate",
+			.parser = barg_int(&int_broadcast_rate),
+			.summary = "The frequency to broadcast world snapshot",
+		},
+		{
+			.name = "tick-rate",
+			.parser = barg_int(&int_tick_rate),
+			.summary = "The frequency to update world state",
+		},
+		{
+			.name = "connect-timeout-s",
+			.parser = barg_int(&connect_timeout_s),
+			.summary = "How much time the client has to connect to the server",
+			.description = "This also affects how long the server is allowed to stay idle without players",
+		},
+		{
+			.name = "max-num-players",
+			.parser = barg_int(&options.max_num_players),
+			.summary = "Maximum number of players",
+		},
+		barg_opt_help(),
+	};
+	barg_t barg = {
+		.usage = "cn_server [options] <module-path>",
+		.summary = "Start the game server",
+		.opts = opts,
+		.num_opts = sizeof(opts) / sizeof(opts[0]),
+		.allow_positional = true,
+	};
+	barg_result_t result = barg_parse(&barg, argc, argv);
+	if (result.status != BARG_OK) {
+		barg_print_result(&barg, result, stderr);
+		return result.status == BARG_PARSE_ERROR;
+	}
+	if (result.arg_index != argc - 1) {
+		fprintf(stderr, "Module path is required\n");
+		return 1;
+	}
+
 	stm_setup();
 
-	void* module = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+	void* module = dlopen(argv[result.arg_index], RTLD_NOW | RTLD_LOCAL);
 	if (module == NULL) { return 1; }
 	snetd_t* (*entry_fn)(void) = (snetd_t* (*)(void))dlsym(module, "snetd_entry");
-	if (entry_fn == NULL) { dlclose(module); return 1; }
+	if (entry_fn == NULL) {
+		fprintf(stderr, "Module does not export a snetd_entry function\n");
+		dlclose(module);
+		return 1;
+	}
 	snetd_t* snetd = entry_fn();
-
-	// TODO: configure
-	double broadcast_rate = 20;
-	double tick_rate = 30;
-	const double broadcast_interval_ms = 1000 / broadcast_rate;
-	const double tick_interval_ms = 1000 / tick_rate;
+	if (snetd == NULL) {
+		fprintf(stderr, "snetd_entry has an invalid return value\n");
+		dlclose(module);
+		return 1;
+	}
 
 	buf_t recv_buf = { 0 };
 	int cmd_size;
 
-	if ((cmd_size = recv_cmd(&recv_buf)) <= 0) {
-		return 1;
-	}
-
-	if (cmd_size != (sizeof(cn_crypto_sign_public_t) + sizeof(cn_crypto_sign_secret_t))) {
-		return 1;
-	}
-
 	cn_server_config_t config = cn_server_config_defaults();
-	memcpy(&config.public_key, recv_buf.ptr, sizeof(config.public_key));
-	memcpy(&config.secret_key, recv_buf.ptr + sizeof(config.public_key), sizeof(config.secret_key));
+	cn_crypto_sign_keygen(&config.public_key, &config.secret_key);
 	cn_server_t* server = cn_server_create(config);
 	cn_server_start(server, "0.0.0.0:0");
+	int bound_port = cn_server_get_endpoint(server).port;
 
-	snetd_env_impl_t env_impl = {
+	endpoint_str_t address_bufs[SNETD_MAX_NUM_ADDRESSES + 1] = { 0 };
+	const char* address_list[SNETD_MAX_NUM_ADDRESSES + 1] = { 0 };
+	int num_addresses = addresses_barg.num_elements;
+	for (int i = 0; i < num_addresses; ++i) {
+		snprintf(address_bufs[i], sizeof(address_bufs[i]), "%s:%d", addresses[i], bound_port);
+		address_list[i] = address_bufs[i];
+	}
+	// Workaround for cute_net address check
+	snprintf(
+		address_bufs[num_addresses],
+		sizeof(address_bufs[num_addresses]),
+		"0.0.0.0:%d", bound_port
+	);
+	address_list[num_addresses] = address_bufs[num_addresses];
+	++num_addresses;
+
+	snetd_env_impl_t env = {
 		.env = {
 			.realloc = snetd_env_realloc_impl,
 			.log = snetd_env_log_impl,
 			.send = snetd_env_send_impl,
 			.kick = snetd_env_kick_impl,
 			.terminate = snetd_env_terminate_impl,
+			.allow_join = snetd_env_allow_join_impl,
+			.forbid_join = snetd_env_forbid_join_impl,
 		},
 		.server = server,
 		.should_run = true,
 	};
-	void* snetd_ctx = snetd->init(&env_impl.env);
+	void* snetd_ctx = snetd->init(&env.env, &options);
 
 	uint64_t tick_timer = 0;
 	uint64_t tick_count = 0;
 	double tick_accumulator_ms = 0.0;
+	const double tick_interval_ms = 1000.0 / (double)int_tick_rate;
 
 	uint64_t broadcast_timer = 0;
 	double broadcast_accumulator_ms = 0.0;
+	const double broadcast_interval_ms = 1000.0 / (double)int_broadcast_rate;
 
 	uint64_t server_update_timer = 0;
 
 	uint64_t poll_timer = 0;
 	double time_budget_ms = 0.0;
 
-	while (env_impl.should_run) {
+	while (env.should_run) {
 		stm_laptime(&poll_timer);
 		time_budget_ms += tick_interval_ms;
 
 		// Tick
 		{
+			// TODO: only tick after the first player joined
 			tick_accumulator_ms += stm_ms(stm_laptime(&tick_timer));
 
 			while (tick_accumulator_ms > tick_interval_ms) {
@@ -237,42 +405,84 @@ main(int argc, const char* argv[]) {
 		update_server(server, &server_update_timer, snetd, snetd_ctx);
 
 		// Use the rest of the timeslice for polling
-		time_budget_ms -= stm_ms(stm_laptime(&broadcast_timer));
+		time_budget_ms -= stm_ms(stm_laptime(&poll_timer));
 		do {
 			int poll_result;
-			int timeout = time_budget_ms > 0.0 ? (int)time_budget_ms : 0;
+			int timeout = time_budget_ms >= 1.0 ? (int)time_budget_ms : 0;
 			do {
-				bool injected_packets = false;
 				struct pollfd polls = {
 					.fd = 3,
-					.events = POLLIN | POLLERR | POLLHUP
+					.events = POLLIN,
 				};
 				poll_result = poll(&polls, 1, timeout);
 				timeout = 0;
 
-				if ((polls.revents & POLLERR) | (polls.revents & POLLHUP)) {
+				if ((polls.revents & POLLERR) | (polls.revents & POLLHUP) | (polls.revents & POLLNVAL)) {
 					goto end;
 				} else if (polls.revents & POLLIN) {
-					// read command
-					// injected_packets = true;
-				}
+					if ((cmd_size = recv_cmd(&recv_buf)) <= 0) {
+						goto end;
+					}
 
-				if (injected_packets) {  // Process injected packets
-					update_server(server, &server_update_timer, snetd, snetd_ctx);
+					switch (recv_buf.ptr[0]) {
+						case REQUEST_CONNECT_TOKEN: {
+							env.allow_join = false;
+							env.rejection_reason = "default_reject";
+							snetd->event(snetd_ctx, &(snetd_event_t){
+								.type = SNETD_EVENT_PLAYER_JOINING,
+								.player_joining = {
+									.username = recv_buf.ptr + 1,
+								},
+							});
+
+							if (env.allow_join) {
+								uint8_t connect_token[CN_CONNECT_TOKEN_SIZE];
+								uint64_t unix_timestamp = time(NULL);
+								cn_crypto_key_t client_to_server = cn_crypto_generate_key();
+								cn_crypto_key_t server_to_client = cn_crypto_generate_key();
+								cn_generate_connect_token(
+									0,
+									unix_timestamp,
+									&client_to_server, &server_to_client,
+									unix_timestamp + connect_timeout_s,
+									connect_timeout_s,
+									num_addresses, address_list,
+									(uint64_t)sintern(recv_buf.ptr + 1),
+									NULL,
+									&config.secret_key,
+									connect_token
+								);
+
+								send_control_header(CONTROL_CONNECT_TOKEN, CN_CONNECT_TOKEN_SIZE + 1);
+								send_payload(&env.allow_join, 1);
+								send_payload(connect_token, sizeof(connect_token));
+							} else {
+								int reason_length = strlen(env.rejection_reason);
+								send_control_header(CONTROL_CONNECT_TOKEN, reason_length + 1);
+								send_payload(&env.allow_join, 1);
+								send_payload(env.rejection_reason, reason_length);
+							}
+						} break;
+						default: {
+							fprintf(stderr, "Invalid command type: %d\r\n", recv_buf.ptr[0]);
+							goto end;
+						} break;
+					}
 				}
 			} while (poll_result > 0);
 
-			time_budget_ms -= stm_ms(stm_laptime(&broadcast_timer));
-		} while (time_budget_ms > 0.0);
+			time_budget_ms -= stm_ms(stm_laptime(&poll_timer));
+		} while (time_budget_ms >= 1.0);
 	}
+
 end:
 	cn_server_stop(server);
 	cn_server_destroy(server);
 
 	snetd->cleanup(snetd_ctx);
+	dlclose(module);
+
+	free(recv_buf.ptr);
 
 	return 0;
 }
-
-#define SOKOL_IMPL
-#include "sokol_time.h"

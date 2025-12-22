@@ -35,6 +35,6 @@ init([]) ->
 	ChildSpecs = [#{
 		id => snetd_game,
 		start => {snetd_game, start_link, []},
-		restart => transient
+		restart => temporary
 	}],
 	{ok, {SupFlags, ChildSpecs}}.

@@ -559,6 +559,7 @@ float cn_server_get_packet_loss_estimate(cn_server_t* server, int client_index);
 float cn_server_get_rtt_estimate(cn_server_t* server, int client_index);
 float cn_server_get_incoming_kbps_estimate(cn_server_t* server, int client_index);
 float cn_server_get_outgoing_kbps_estimate(cn_server_t* server, int client_index);
+cn_endpoint_t cn_server_get_endpoint(cn_server_t* server);
 
 //--------------------------------------------------------------------------------------------------
 // ERROR
@@ -9335,6 +9336,11 @@ float cn_server_get_outgoing_kbps_estimate(cn_server_t* server, int client_index
 {
 	CN_ASSERT(cn_server_is_client_connected(server, client_index));
 	return (float)server->client_transports[client_index]->ack_system->incoming_bandwidth_kbps;
+}
+
+cn_endpoint_t cn_server_get_endpoint(cn_server_t* server)
+{
+	return server->p_server->socket.endpoint;
 }
 
 // -------------------------------------------------------------------------------------------------

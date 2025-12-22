@@ -32,9 +32,9 @@
 			}
 		}},
 		{game, #{
-			module => {{priv_dir, slopnetd, "bin/snetd_relay.so"}, []},
+			module => {{priv_dir, slopnetd, "bin/snetd_dummy.so"}, []},
 			join_token_ttl_s => 120,
-			connect_timeout_ms => 10000
+			connect_timeout_s => 10
 		}}
 	]},
     {modules, []}

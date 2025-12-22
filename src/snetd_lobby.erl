@@ -47,5 +47,31 @@ init(Req, create) ->
 	else
 		Return -> snetd_utils:handle_early_return(Return, Req)
 	end;
+init(Req, join) ->
+	maybe
+		{ok, #{ id := UserId }} ?= snetd_auth:auth_req(Req),
+		BodyOpts = #{ length => 1024, period => 5000 },
+		{ok, Body, Req2} ?= snetd_utils:read_body(Req, BodyOpts),
+		{ok, GameName} ?= case snetd_game:decode_join_token(Body) of
+			{ok, #{ ~"game" := GameNameIn }} -> {ok, GameNameIn};
+			{error, _} -> {return, snetd_utils:reply_with_text(400, ~"invalid_token", Req2)}
+		end,
+		{ok, ConnectToken} ?= case snetd_game:request_connect_token(GameName, UserId) of
+			{ok, _} = Granted -> Granted;
+			{error, Reason} ->
+				{return, snetd_utils:reply_with_text(403, Reason, Req2)}
+		end,
+		{ ok
+		, cowboy_req:reply(
+			200,
+			#{ ~"content-type" => ~"application/octet-stream" },
+			ConnectToken,
+			Req2
+		  )
+		, []
+		}
+	else
+		Return -> snetd_utils:handle_early_return(Return, Req)
+	end;
 init(Req, State) ->
 	{ok, cowboy_req:reply(400, Req), State}.
