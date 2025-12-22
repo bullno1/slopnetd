@@ -24,8 +24,20 @@ event(void* userdata, const snetd_event_t* event) {
 	ctx_t* ctx = userdata;
 	snetd_env_t* env = ctx->env;
 
-	if (event->type == SNETD_EVENT_PLAYER_JOINING) {
-		snetd_allow_join(env);
+	switch (event->type) {
+		case SNETD_EVENT_PLAYER_JOINING:
+			snetd_allow_join(env);
+			break;
+		case SNETD_EVENT_PLAYER_JOINED:
+			snetd_log(env, event->player_joined.username);
+			break;
+		case SNETD_EVENT_PLAYER_LEFT:
+			break;
+		case SNETD_EVENT_MESSAGE:
+			snetd_send(env, event->message.sender, event->message.data, event->message.size, false);
+			break;
+		default:
+			break;
 	}
 }
 

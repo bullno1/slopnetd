@@ -22,7 +22,7 @@
 #pragma clang diagnostic pop
 #endif
 
-#define SNETD_MAX_PLAYERS 32
+#define SNETD_MAX_NUM_PLAYERS 32
 #define SNETD_MAX_NUM_ADDRESSES 16
 
 typedef char endpoint_str_t[sizeof("256.256.256.256:65536")];
@@ -51,7 +51,9 @@ typedef struct {
 	bool allow_join;
 	const char* rejection_reason;
 
-	player_info_t players[SNETD_MAX_PLAYERS];
+	player_info_t players[SNETD_MAX_NUM_PLAYERS];
+	int cn_to_snet[CN_SERVER_MAX_CLIENTS];
+	int num_players;
 } snetd_env_impl_t;
 
 typedef enum {
@@ -147,19 +149,33 @@ snetd_env_realloc_impl(snetd_env_t* env, void* ptr, size_t size) {
 
 static void
 snetd_env_log_impl(snetd_env_t* env, const char* message) {
-	send_control(CONTROL_LOG_MESSAGE, message, strlen(message));
+	send_control(CONTROL_LOG_MESSAGE, message, message != NULL ? strlen(message) : 0);
 }
 
 static void
 snetd_env_send_impl(snetd_env_t* env, int player, const void* data, size_t size, bool reliable) {
 	snetd_env_impl_t* impl = (snetd_env_impl_t*)env;
-	cn_server_send(impl->server, data, size, player, reliable);
+
+	if (player >= SNETD_MAX_NUM_PLAYERS) { return; }
+	const player_info_t* player_info = &impl->players[player];
+	if (player_info->username == NULL) { return; }
+
+	if (player_info->tranport_type == TRANSPORT_TYPE_CUTE_NET) {
+		cn_server_send(impl->server, data, size, player_info->transport_handle, reliable);
+	}
 }
 
 static void
 snetd_env_kick_impl(snetd_env_t* env, int player) {
 	snetd_env_impl_t* impl = (snetd_env_impl_t*)env;
-	cn_server_disconnect_client(impl->server, player, true);
+
+	if (player >= SNETD_MAX_NUM_PLAYERS) { return; }
+	const player_info_t* player_info = &impl->players[player];
+	if (player_info->username == NULL) { return; }
+
+	if (player_info->tranport_type == TRANSPORT_TYPE_CUTE_NET) {
+		cn_server_disconnect_client(impl->server, player_info->transport_handle, true);
+	}
 }
 
 static void
@@ -179,40 +195,6 @@ snetd_env_forbid_join_impl(snetd_env_t* env, const char* reason) {
 	snetd_env_impl_t* impl = (snetd_env_impl_t*)env;
 	impl->allow_join = false;
 	impl->rejection_reason = reason;
-}
-
-static void
-update_server(cn_server_t* server, uint64_t* timer, snetd_t* snetd, void* snetd_ctx) {
-	cn_server_update(server, stm_sec(stm_laptime(timer)), time(NULL));
-
-	cn_server_event_t event;
-	while (cn_server_pop_event(server, &event)) {
-		switch (event.type) {
-			case CN_SERVER_EVENT_TYPE_NEW_CONNECTION:
-				snetd->event(snetd_ctx, &(snetd_event_t){
-					.type = SNETD_EVENT_PLAYER_JOINED,
-					.player_joined = { .player_index = event.u.new_connection.client_index },
-				});
-				break;
-			case CN_SERVER_EVENT_TYPE_DISCONNECTED:
-				snetd->event(snetd_ctx, &(snetd_event_t){
-					.type = SNETD_EVENT_PLAYER_LEFT,
-					.player_left = { .player_index = event.u.disconnected.client_index },
-				});
-				break;
-			case CN_SERVER_EVENT_TYPE_PAYLOAD_PACKET:
-				snetd->event(snetd_ctx, &(snetd_event_t){
-					.type = SNETD_EVENT_MESSAGE,
-					.message = {
-						.sender = event.u.payload_packet.client_index,
-						.data = event.u.payload_packet.data,
-						.size = event.u.payload_packet.size,
-					},
-				});
-				cn_server_free_packet(server, event.u.payload_packet.client_index, event.u.payload_packet.data);
-				break;
-		}
-	}
 }
 
 int
@@ -370,7 +352,15 @@ main(int argc, const char* argv[]) {
 	uint64_t poll_timer = 0;
 	double time_budget_ms = 0.0;
 
+	uint64_t disconnect_time = time(NULL) + connect_timeout_s;
+
 	while (env.should_run) {
+		uint64_t current_unix_time = time(NULL);
+		if (env.num_players == 0 && current_unix_time > disconnect_time) {
+			snetd_log(&env.env, "Shutting down empty server");
+			break;
+		}
+
 		stm_laptime(&poll_timer);
 		time_budget_ms += tick_interval_ms;
 
@@ -402,7 +392,66 @@ main(int argc, const char* argv[]) {
 		}
 
 		// Server update
-		update_server(server, &server_update_timer, snetd, snetd_ctx);
+		{
+			cn_server_update(server, stm_sec(stm_laptime(&server_update_timer)), current_unix_time);
+
+			cn_server_event_t event;
+			while (cn_server_pop_event(server, &event)) {
+				switch (event.type) {
+					case CN_SERVER_EVENT_TYPE_NEW_CONNECTION: {
+						// Find an empty slot to map this cute_net client
+						const char* username = (const char*)(uintptr_t)event.u.new_connection.client_id;
+						int player_index;
+						for (player_index = 0; player_index < SNETD_MAX_NUM_PLAYERS; ++player_index) {
+							if (env.players[player_index].username == NULL) {
+								break;
+							}
+						}
+						env.players[player_index] = (player_info_t){
+							.username = username,
+							.tranport_type = TRANSPORT_TYPE_CUTE_NET,
+							.transport_handle = event.u.new_connection.client_index,
+						};
+						++env.num_players;
+						env.cn_to_snet[event.u.new_connection.client_index] = player_index;
+
+						snetd->event(snetd_ctx, &(snetd_event_t){
+							.type = SNETD_EVENT_PLAYER_JOINED,
+							.player_joined = {
+								.username = username,
+								.player_index = player_index,
+							},
+						});
+					} break;
+					case CN_SERVER_EVENT_TYPE_DISCONNECTED: {
+						int player_index = env.cn_to_snet[event.u.disconnected.client_index];
+						snetd->event(snetd_ctx, &(snetd_event_t){
+							.type = SNETD_EVENT_PLAYER_LEFT,
+							.player_left = {
+								.player_index = player_index,
+							},
+						});
+
+						env.players[player_index].username = NULL;
+						if (--env.num_players == 0) {
+							disconnect_time = current_unix_time + connect_timeout_s;
+						}
+					} break;
+					case CN_SERVER_EVENT_TYPE_PAYLOAD_PACKET: {
+						int player_index = env.cn_to_snet[event.u.disconnected.client_index];
+						snetd->event(snetd_ctx, &(snetd_event_t){
+							.type = SNETD_EVENT_MESSAGE,
+							.message = {
+								.sender = player_index,
+								.data = event.u.payload_packet.data,
+								.size = event.u.payload_packet.size,
+							},
+						});
+						cn_server_free_packet(server, event.u.payload_packet.client_index, event.u.payload_packet.data);
+					} break;
+				}
+			}
+		}
 
 		// Use the rest of the timeslice for polling
 		time_budget_ms -= stm_ms(stm_laptime(&poll_timer));
@@ -428,16 +477,20 @@ main(int argc, const char* argv[]) {
 						case REQUEST_CONNECT_TOKEN: {
 							env.allow_join = false;
 							env.rejection_reason = "default_reject";
-							snetd->event(snetd_ctx, &(snetd_event_t){
-								.type = SNETD_EVENT_PLAYER_JOINING,
-								.player_joining = {
-									.username = recv_buf.ptr + 1,
-								},
-							});
+							if (env.num_players < SNETD_MAX_NUM_PLAYERS) {
+								snetd->event(snetd_ctx, &(snetd_event_t){
+									.type = SNETD_EVENT_PLAYER_JOINING,
+									.player_joining = {
+										.username = recv_buf.ptr + 1,
+									},
+								});
+							} else {
+								env.rejection_reason = "server_full";
+							}
 
 							if (env.allow_join) {
 								uint8_t connect_token[CN_CONNECT_TOKEN_SIZE];
-								uint64_t unix_timestamp = time(NULL);
+								uint64_t unix_timestamp = current_unix_time;
 								cn_crypto_key_t client_to_server = cn_crypto_generate_key();
 								cn_crypto_key_t server_to_client = cn_crypto_generate_key();
 								cn_generate_connect_token(

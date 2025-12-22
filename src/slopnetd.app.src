@@ -34,7 +34,7 @@
 		{game, #{
 			module => {{priv_dir, slopnetd, "bin/snetd_dummy.so"}, []},
 			join_token_ttl_s => 120,
-			connect_timeout_s => 10
+			connect_timeout_s => 5
 		}}
 	]},
     {modules, []}
