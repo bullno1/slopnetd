@@ -73,5 +73,26 @@ init(Req, join) ->
 	else
 		Return -> snetd_utils:handle_early_return(Return, Req)
 	end;
+init(Req, list) ->
+	maybe
+		{ok, #{ id := _ }} ?= snetd_auth:auth_req(Req),
+		Games = [Data || {_Pid, Data} <- lproc:list(snetd_game)],
+		Entries = [
+			#{ join_token => snetd_game:make_join_token(GameName)
+			 , creator => GameName
+			 , data => ~""
+			 } || {GameName, _Data} <- Games
+		],
+		{ ok
+		, snetd_utils:reply_with_json(
+			200,
+			#{ games => Entries },
+			Req
+		  )
+		, []
+		}
+	else
+		Return -> snetd_utils:handle_early_return(Return, Req)
+	end;
 init(Req, State) ->
 	{ok, cowboy_req:reply(400, Req), State}.
