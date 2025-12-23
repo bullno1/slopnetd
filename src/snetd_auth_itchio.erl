@@ -65,12 +65,12 @@ init(Req, callback) ->
 		Cookie = snetd_auth:issue_token(#{
 			id => <<Username/binary, "@itch.io">>
 		}),
-		redirect(Req, ~"/finish", [{~"data", Cookie}, {~"success", ~"1"}], State)
+		redirect(Req, ~"/oauth_callback", [{~"data", Cookie}, {~"success", ~"1"}], State)
 	else
 		{error, game_not_owned} ->
-			redirect(Req, ~"/finish", [{~"data", ~"game_not_owned"}, {~"success", ~"0"}], State);
+			redirect(Req, ~"/oauth_callback", [{~"data", ~"game_not_owned"}, {~"success", ~"0"}], State);
 		{error, _Reason} ->
-			redirect(Req, ~"/finish", [{~"data", ~"internal_error"}, {~"success", ~"0"}], State)
+			redirect(Req, ~"/oauth_callback", [{~"data", ~"internal_error"}, {~"success", ~"0"}], State)
 	end;
 init(Req, State) ->
 	{ok, cowboy_req:reply(400, Req), State}.
