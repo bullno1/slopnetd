@@ -27,5 +27,8 @@ init(#{ method := ~"POST" } = Req, _) ->
 	else
 		EarlyReturn -> snetd_utils:handle_early_return(EarlyReturn, Req)
 	end;
+init(#{ method := ~"OPTIONS" } = Req, _) ->
+	CorsOpts = #{ allowed_methods => [~"POST"] },
+	{ok, snetd_utils:cors(Req, CorsOpts), []};
 init(Req, State) ->
 	{ok, cowboy_req:reply(400, Req), State}.

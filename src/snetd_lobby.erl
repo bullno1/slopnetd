@@ -13,7 +13,7 @@ routes() ->
 
 %% cowboy_handler
 
-init(Req, create) ->
+init(#{ method := ~"POST" } = Req, create) ->
 	maybe
 		{ok, #{ id := UserId }} ?= snetd_auth:auth_req(Req),
 		BodyOpts = #{ length => 1024, period => 5000 },
@@ -47,7 +47,7 @@ init(Req, create) ->
 	else
 		Return -> snetd_utils:handle_early_return(Return, Req)
 	end;
-init(Req, join) ->
+init(#{ method := ~"POST" } = Req, join) ->
 	maybe
 		{ok, #{ id := UserId }} ?= snetd_auth:auth_req(Req),
 		BodyOpts = #{ length => 1024, period => 5000 },
@@ -73,7 +73,7 @@ init(Req, join) ->
 	else
 		Return -> snetd_utils:handle_early_return(Return, Req)
 	end;
-init(Req, list) ->
+init(#{ method := ~"GET" } = Req, list) ->
 	maybe
 		{ok, #{ id := _ }} ?= snetd_auth:auth_req(Req),
 		Games = [Data || {_Pid, Data} <- lproc:list(snetd_game)],
@@ -94,5 +94,8 @@ init(Req, list) ->
 	else
 		Return -> snetd_utils:handle_early_return(Return, Req)
 	end;
+init(#{ method := ~"OPTIONS" } = Req, _) ->
+	CorsOpts = #{ allowed_methods => [~"POST"] },
+	{ok, snetd_utils:cors(Req, CorsOpts), []};
 init(Req, State) ->
 	{ok, cowboy_req:reply(400, Req), State}.

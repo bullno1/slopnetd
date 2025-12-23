@@ -36,6 +36,17 @@
 				}
 			}
 		}},
+		{quic, #{
+			transport_opts => [
+				{port, 8081}
+			]
+		}},
+		{cors, #{
+			allowed_origins => '*',  % Change to list of origins to restrict
+			allowed_methods => [],  % Must provide on a case-by-case basis
+			allowed_headers => [~"Content-Type", ~"Authorization"],
+			max_age => 86400
+		}},
 		{game, #{
 			module => {{priv_dir, slopnetd, "bin/snetd_dummy.so"}, []},
 			join_token_ttl_s => 120,

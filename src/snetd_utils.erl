@@ -4,9 +4,18 @@
 	reply_with_text/3,
 	reply_with_json/3,
 	read_body/2,
-	read_body_json/2
+	read_body_json/2,
+	cors/2
 ]).
+-export_type([cors_options/0]).
 -include_lib("kernel/include/logger.hrl").
+
+-type cors_options() :: #{
+	allowed_origins => '*' | [binary()],
+	allowed_methods => [binary()],
+	allowed_headers => [binary()],
+	max_age => non_neg_integer()
+}.
 
 -spec reply_with_text(cowboy:http_status(), iodata(), cowboy_req:req()) -> cowboy_req:req().
 reply_with_text(Status, Text, Req) ->
@@ -55,6 +64,24 @@ read_body_json(Req, Opts) ->
 			Err
 	end.
 
+-spec cors(Req, Options) -> Req when
+	  Req :: cowboy_req:req(),
+	  Options :: cors_options().
+cors(Req, Options) ->
+	{ok, DefaultOptions} = application:get_env(slopnetd, cors),
+	EffectiveOpts = maps:merge(DefaultOptions, Options),
+	AllowedOrigins = maps:get(allowed_origins, EffectiveOpts),
+	Origin = cowboy_req:header(~"origin", Req, ~""),
+	case AllowedOrigins of
+		'*' ->
+			send_cors_response(Origin, EffectiveOpts, Req);
+		_ ->
+			case lists:member(Origin, AllowedOrigins) of
+				true -> send_cors_response(Origin, EffectiveOpts, Req);
+				false -> cowboy_req:reply(403, Req)
+			end
+	end.
+
 -spec handle_early_return(term(), cowboy_req:req()) -> {ok, cowboy_req:req(), []}.
 handle_early_return({return, Req}, _) ->
 	{ok, Req, []};
@@ -68,3 +95,21 @@ handle_early_return({error, bad_request, Req}, _) ->
 handle_early_return(Value, Req) ->
 	?LOG_ERROR(#{ what => unknown_return, error => Value }),
 	{ok, reply_with_text(500, ~"internal_error", Req), []}.
+
+%% Private
+
+send_cors_response(
+	Origin,
+	#{ allowed_methods := AllowedMethods
+	 , allowed_headers := AllowedHeaders
+	 , max_age := MaxAge
+	 },
+	Req
+) ->
+	Headers = #{
+		~"Access-Control-Allow-Origin" => Origin,
+		~"Access-Control-Allow-Methods" => lists:join(~", ", AllowedMethods),
+		~"Access-Control-Allow-Headers" => lists:join(~", ", AllowedHeaders),
+		~"Access-Control-Max-Age" => integer_to_binary(MaxAge)
+	},
+	cowboy_req:reply(200, Headers, Req).
