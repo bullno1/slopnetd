@@ -7,9 +7,11 @@
 		kernel,
 		stdlib,
 		crypto,
+		public_key,
 		ssl,
 		inets,
 		erlydtl,
+		quicer,
 		cowboy
 	]},
 	{env, [
@@ -37,9 +39,7 @@
 			}
 		}},
 		{quic, #{
-			transport_opts => [
-				{port, 8081}
-			]
+			transport_opts => [{port, 8081}]
 		}},
 		{cors, #{
 			allowed_origins => '*',  % Change to list of origins to restrict

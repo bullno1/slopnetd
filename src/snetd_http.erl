@@ -7,10 +7,19 @@
 
 start() ->
 	load_routes(),
-    {ok, _} = cowboy:start_clear(?MODULE,
-        [{port, 8080}],
-        #{env => #{dispatch => {persistent_term, ?MODULE}}}
-    ),
+	ProtoOpts = #{
+		env => #{dispatch => {persistent_term, ?MODULE}}
+	},
+	{ok, _} = cowboy:start_clear(?MODULE, [{port, 8080}], ProtoOpts),
+
+	{Cert, Key} = snetd_crypto:generate_cert([]),
+	TransportOpts = #{
+		socket_opts => [
+			{port, 8081},
+			{certkeyasn1, snetd_crypto:make_pkcs12(Cert, Key)}
+		]
+	},
+	{ok, _} = cowboy:start_quic(?MODULE, TransportOpts, ProtoOpts),
 	ok.
 
 stop() ->
