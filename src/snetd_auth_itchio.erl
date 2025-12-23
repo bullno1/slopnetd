@@ -6,8 +6,7 @@
 %% Public
 
 routes() ->
-	[
-	  {"/snet/auth/itchio/start", snetd_auth_itchio, start}
+	[ {"/snet/auth/itchio/start", snetd_auth_itchio, start}
 	, {"/snet/auth/itchio/callback", cowboy_static, {priv_file, slopnetd, "www/itchio/callback.html"}}
 	, {"/snet/auth/itchio/callback2", snetd_auth_itchio, callback}
 	, {"/snet/auth/itchio/end", cowboy_static, {priv_file, slopnetd, "www/itchio/end.html"}}
@@ -17,7 +16,7 @@ routes() ->
 %% cowboy_handler
 
 init(Req, start) ->
-	#{ app_port := AppPort } = cowboy_req:match_qs([{app_port, int}], Req),
+	#{ origin := Origin } = cowboy_req:match_qs([{origin, nonempty}], Req),
 	{ok, #{
 		client_id := ClientId,
 		redirect_uri := RedirectUri
@@ -27,7 +26,7 @@ init(Req, start) ->
 		{~"redirect_uri", RedirectUri},
 		{~"response_type", ~"token"},
 		{~"scope", ~"profile:me game:view:ownership"},
-		{~"state", integer_to_binary(AppPort)}
+		{~"state", Origin}
 	]),
 	RedirectUrl = uri_string:recompose(#{
 		scheme => ~"https",
@@ -39,12 +38,23 @@ init(Req, start) ->
 init(Req, callback) ->
 	#{
 		access_token := AccessToken,
-		state := State
-	} = cowboy_req:match_qs([{access_token, nonempty}, {state, int}], Req),
+		state := Origin
+	} = cowboy_req:match_qs([{access_token, nonempty}, {state, nonempty}], Req),
 	{ok, #{
-		game_id := GameId
+		game_id := GameId,
+		allowed_origins := AllowedOrigins
 	}} = application:get_env(slopnetd, itchio),
 	maybe
+		ok ?= case Origin of
+			<<"http://localhost:", _/binary>> ->
+				ok;
+			OtherOrigin ->
+				case lists:member(OtherOrigin, AllowedOrigins) of
+					true -> ok;
+					false ->
+						{return, snetd_utils:reply_with_text(400, ~"Invalid origin", Req)}
+				end
+		end,
 		ok ?= case itchio_api([~"/games/", GameId, ~"/ownership"], AccessToken) of
 			{ok, #{ ~"owns" := true}}->
 				ok;
@@ -65,12 +75,14 @@ init(Req, callback) ->
 		Cookie = snetd_auth:issue_token(#{
 			id => <<Username/binary, "@itch.io">>
 		}),
-		redirect(Req, ~"/oauth_callback", [{~"data", Cookie}, {~"success", ~"1"}], State)
+		finish(Req, [{~"data", Cookie}, {~"success", ~"1"}], Origin)
 	else
 		{error, game_not_owned} ->
-			redirect(Req, ~"/oauth_callback", [{~"data", ~"game_not_owned"}, {~"success", ~"0"}], State);
+			finish(Req, [{~"data", ~"game_not_owned"}, {~"success", ~"0"}], Origin);
 		{error, _Reason} ->
-			redirect(Req, ~"/oauth_callback", [{~"data", ~"internal_error"}, {~"success", ~"0"}], State)
+			finish(Req, [{~"data", ~"internal_error"}, {~"success", ~"0"}], Origin);
+		EarlyReturn ->
+			snetd_utils:handle_early_return(EarlyReturn, Req)
 	end;
 init(Req, State) ->
 	{ok, cowboy_req:reply(400, Req), State}.
@@ -99,13 +111,13 @@ itchio_api(Endpoint, Token) ->
 		end
 	end.
 
-redirect(Req, Path, QsParams, Port) ->
+finish(Req, QsParams, <<"http://localhost:", _/binary>> = Origin) ->
 	Qs = uri_string:compose_query(QsParams),
-	RedirectUrl = uri_string:recompose(#{
-		scheme => ~"http",
-		host => ~"localhost",
-		port => Port,
-		path => Path,
-		query => Qs
-	}),
-	{ok, cowboy_req:reply(302, #{~"location" => RedirectUrl}, Req), []}.
+	{ ok
+	, cowboy_req:reply(
+		302,
+		#{~"location" => <<Origin/binary, "/oauth_callback", $?, Qs/binary>>},
+		Req
+	  )
+	, []
+	}.
