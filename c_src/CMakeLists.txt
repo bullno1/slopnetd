@@ -16,3 +16,19 @@ if (NOT MSVC)
 		-Wl,--no-whole-archive
 	)
 endif ()
+
+find_package(OpenSSL REQUIRED)
+
+add_library(snetd_crypto SHARED "snetd_crypto.c")
+target_include_directories(snetd_crypto PRIVATE ${OTP_INCLUDE_DIR} ${OPENSSL_INCLUDE_DIR})
+target_link_libraries(snetd_crypto PRIVATE OpenSSL::Crypto)
+set_target_properties(snetd_crypto PROPERTIES
+	PREFIX ""
+	C_VISIBILITY_PRESET hidden
+)
+if (NOT MSVC)
+	target_link_options(snetd_crypto PRIVATE
+		-Wl,--exclude-libs,ALL
+		-Wl,--no-whole-archive
+	)
+endif ()
