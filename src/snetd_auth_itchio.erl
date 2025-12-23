@@ -120,4 +120,20 @@ finish(Req, QsParams, <<"http://localhost:", _/binary>> = Origin) ->
 		Req
 	  )
 	, []
+	};
+finish(Req, QsParams, Origin) ->
+	{ok, Content} = snetd_auth_itchio_return_dtl:render(#{
+		data => json:encode(#{
+			result => maps:from_list(QsParams),
+			origin => Origin
+		})
+	}),
+	{ ok
+	, cowboy_req:reply(
+		200,
+		#{~"content-type" => ~"text/html"},
+		Content,
+		Req
+	  )
+	, []
 	}.

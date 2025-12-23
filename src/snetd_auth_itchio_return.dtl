@@ -1,0 +1,9 @@
+<!doctype html>
+<head>
+	<title>Authenticating with itchio</title>
+	<script id="data" type="text/plain">{{ data | safe }}</script>
+	<script src="./return.js" async></script>
+</head>
+<body>
+	<h1 id="status">Authenticating...</h1>
+</body>
