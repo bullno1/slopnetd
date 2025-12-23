@@ -110,6 +110,7 @@ send_cors_response(
 		~"Access-Control-Allow-Origin" => Origin,
 		~"Access-Control-Allow-Methods" => lists:join(~", ", AllowedMethods),
 		~"Access-Control-Allow-Headers" => lists:join(~", ", AllowedHeaders),
-		~"Access-Control-Max-Age" => integer_to_binary(MaxAge)
+		~"Access-Control-Max-Age" => integer_to_binary(MaxAge),
+		~"Vary" => ~"Origin"
 	},
 	cowboy_req:reply(200, Headers, Req).
