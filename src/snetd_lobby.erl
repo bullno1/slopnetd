@@ -66,7 +66,7 @@ init(#{ method := ~"POST" } = Req, join) ->
 						{return, snetd_utils:reply_with_text(403, Reason, Req2)}
 				end;
 			~"webtransport" ->
-				case ok of
+				case snetd_game:request_join_permission(GameName, UserId) of
 					ok ->
 						{ok, generate_webtransport_token(GameName, UserId)};
 					{error, Reason} ->

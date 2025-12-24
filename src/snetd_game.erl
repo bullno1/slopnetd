@@ -5,16 +5,24 @@
 	info/1,
 	make_join_token/1,
 	decode_join_token/1,
-	request_connect_token/2
+	request_connect_token/2,
+	request_join_permission/2,
+	connect_webtransport/2
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 -export_type([params/0, info/0]).
 -include_lib("kernel/include/logger.hrl").
 
 -define(PORT_CMD_REQUEST_CONNECT_TOKEN, 0).
+-define(PORT_CMD_REQUEST_JOIN_PERMISSION, 1).
+-define(PORT_CMD_WEBTRANSPORT_CONNECT, 2).
+-define(PORT_CMD_WEBTRANSPORT_DISCONNECT, 3).
+-define(PORT_CMD_WEBTRANSPORT_MESSAGE, 4).
 
 -define(PORT_MSG_LOG, 0).
--define(PORT_MSG_CONNECT_TOKEN, 1).
+-define(PORT_MSG_QUERY_RESPONSE, 1).
+-define(PORT_MSG_WEBTRANSPORT_SEND, 2).
+-define(PORT_MSG_WEBTRANSPORT_DISCONNECT, 3).
 
 -type params() :: #{
 	visibility := public | private,
@@ -30,7 +38,8 @@
 -record(state, {
 	creator :: binary(),
 	params :: params(),
-	cn_server :: port()
+	cn_server :: port(),
+	wt_clients :: lproc_bimaps:bimap(non_neg_integer(), pid())
 }).
 
 %% Public
@@ -83,6 +92,20 @@ request_connect_token(Game, Player) ->
 		{request_connect_token, Player}
 	).
 
+-spec request_join_permission(binary(), binary()) -> ok | {error, binary()}.
+request_join_permission(Game, Player) ->
+	gen_server:call(
+		{via, lproc, {?MODULE, Game}},
+		{request_join_permission, Player}
+	).
+
+-spec connect_webtransport(binary(), binary()) -> {ok, port(), non_neg_integer()} | {error, binary()}.
+connect_webtransport(Game, Player) ->
+	gen_server:call(
+		{via, lproc, {?MODULE, Game}},
+		{connect_webtransport, Player}
+	).
+
 %% gen_server
 
 init({
@@ -118,7 +141,8 @@ init({
 	{ok, #state{
 		creator = UserId,
 		params = Params,
-		cn_server = CnServer
+		cn_server = CnServer,
+		wt_clients = lproc_bimaps:new()
 	}}.
 
 handle_call(
@@ -142,10 +166,45 @@ handle_call(
 ) ->
 	port_command(CnServer, <<?PORT_CMD_REQUEST_CONNECT_TOKEN, Username/binary, 0>>),
 	receive
-		{CnServer, {data, <<?PORT_MSG_CONNECT_TOKEN, 0, Reason/binary>>}} ->
+		{CnServer, {data, <<?PORT_MSG_QUERY_RESPONSE, 0, Reason/binary>>}} ->
 			{reply, {error, Reason}, State};
-		{CnServer, {data, <<?PORT_MSG_CONNECT_TOKEN, 1, Token/binary>>}} ->
+		{CnServer, {data, <<?PORT_MSG_QUERY_RESPONSE, 1, Token/binary>>}} ->
 			{reply, {ok, Token}, State}
+	after 5000 ->
+		exit(port_timeout)
+	end;
+handle_call(
+	{request_join_permission, Username},
+	_From,
+	#state{cn_server = CnServer} = State
+) ->
+	port_command(CnServer, <<?PORT_CMD_REQUEST_JOIN_PERMISSION, Username/binary, 0>>),
+	receive
+		{CnServer, {data, <<?PORT_MSG_QUERY_RESPONSE, 0, Reason/binary>>}} ->
+			{reply, {error, Reason}, State};
+		{CnServer, {data, <<?PORT_MSG_QUERY_RESPONSE, 1>>}} ->
+			{reply, ok, State}
+	after 5000 ->
+		exit(port_timeout)
+	end;
+handle_call(
+	{connect_webtransport, Username},
+	{Pid, _Tag},
+	#state{
+		cn_server = CnServer,
+		wt_clients = WtClients
+	} = State
+) ->
+	port_command(CnServer, <<?PORT_CMD_WEBTRANSPORT_CONNECT, Username/binary, 0>>),
+	receive
+		{CnServer, {data, <<?PORT_MSG_QUERY_RESPONSE, 0>>}} ->
+			{reply, {error, server_full}, State};
+		{CnServer, {data, <<?PORT_MSG_QUERY_RESPONSE, 1, Slot/unsigned>>}} ->
+			NewState = State#state{
+				wt_clients = lproc_bimaps:add(Slot, Pid, WtClients)
+			},
+			monitor(process, Pid),
+			{reply, {ok, CnServer, Slot}, NewState}
 	after 5000 ->
 		exit(port_timeout)
 	end;
@@ -156,6 +215,17 @@ handle_call(Req, _From, State) ->
 handle_cast(_Req, State) ->
 	{noreply, State}.
 
+handle_info(
+	{'DOWN', _MonitorRef, process, Pid, _Info},
+	#state{ wt_clients = WtClients, cn_server = CnServer } = State
+) ->
+	case lproc_bimaps:take_by_value(Pid, WtClients) of
+		{Slot, WtClients2} ->
+			port_command(CnServer, <<?PORT_CMD_WEBTRANSPORT_DISCONNECT, Slot>>),
+			{noreply, State#state{wt_clients = WtClients2}};
+		error ->
+			{noreply, State}
+	end;
 handle_info({Port, {data, PortMessage}}, #state{ cn_server = Port } = State) ->
 	{noreply, handle_port_message(PortMessage, State)};
 handle_info(
@@ -175,6 +245,28 @@ resolve_module_path(Path) when is_list(Path) ->
 resolve_module_path({priv_dir, App, RelPath}) ->
 	filename:join(code:priv_dir(App), RelPath).
 
+handle_port_message(
+	<<?PORT_MSG_WEBTRANSPORT_SEND, Slot/unsigned, Reliable, Payload/binary>>,
+	#state{ wt_clients = WtClients } = State
+) ->
+	case lproc_bimaps:find_by_key(Slot, WtClients) of
+		{ok, Pid} ->
+			Pid ! {?MODULE, message, Reliable, Payload};
+		error ->
+			ok
+	end,
+	State;
+handle_port_message(
+	<<?PORT_MSG_WEBTRANSPORT_DISCONNECT, Slot/unsigned>>,
+	#state{ wt_clients = WtClients } = State
+) ->
+	case lproc_bimaps:find_by_key(Slot, WtClients) of
+		{ok, Pid} ->
+			Pid ! {?MODULE, disconnect};
+		error ->
+			ok
+	end,
+	State;
 handle_port_message(<<?PORT_MSG_LOG, Log/binary>>, State) ->
 	?LOG_DEBUG(#{ what => server_log, message => Log }),
 	State.

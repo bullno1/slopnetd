@@ -57,12 +57,18 @@ typedef struct {
 } snetd_env_impl_t;
 
 typedef enum {
-	REQUEST_CONNECT_TOKEN,
+	PORT_CMD_REQUEST_CONNECT_TOKEN,
+	PORT_CMD_REQUEST_JOIN_PERMISSION,
+	PORT_CMD_WEBTRANSPORT_CONNECT,
+	PORT_CMD_WEBTRANSPORT_DISCONNECT,
+	PORT_CMD_WEBTRANSPORT_MESSAGE,
 } request_message_type_t;
 
 typedef enum {
-	CONTROL_LOG_MESSAGE,
-	CONTROL_CONNECT_TOKEN,
+	PORT_MSG_LOG_MESSAGE,
+	PORT_MSG_QUERY_RESPONSE,
+	PORT_MSG_WEBTRANSPORT_SEND,
+	PORT_MSG_WEBTRANSPORT_DISCONNECT,
 } control_message_type_t;
 
 typedef struct {
@@ -130,7 +136,7 @@ send_payload(const void* payload, int payload_size) {
 // The cn_server wrapper and the snetd_game are always updated together so we can just
 // send a struct
 static bool
-send_control(control_message_type_t type, const void* payload, int payload_size) {
+send_control_message(control_message_type_t type, const void* payload, int payload_size) {
 	if (!send_control_header(type, payload_size)) { return false; }
 	if (!send_payload(payload, payload_size)) { return false; }
 
@@ -149,7 +155,7 @@ snetd_env_realloc_impl(snetd_env_t* env, void* ptr, size_t size) {
 
 static void
 snetd_env_log_impl(snetd_env_t* env, const char* message) {
-	send_control(CONTROL_LOG_MESSAGE, message, message != NULL ? strlen(message) : 0);
+	send_control_message(PORT_MSG_LOG_MESSAGE, message, message != NULL ? strlen(message) : 0);
 }
 
 static void
@@ -162,6 +168,11 @@ snetd_env_send_impl(snetd_env_t* env, int player, const void* data, size_t size,
 
 	if (player_info->tranport_type == TRANSPORT_TYPE_CUTE_NET) {
 		cn_server_send(impl->server, data, size, player_info->transport_handle, reliable);
+	} else if (player_info->tranport_type == TRANSPORT_TYPE_WEBTRANSPORT) {
+		send_control_header(PORT_MSG_WEBTRANSPORT_SEND, size + 2);
+		char hdr[2] = { player_info->transport_handle, reliable };
+		send_payload(hdr, sizeof(hdr));
+		send_payload(data, size);
 	}
 }
 
@@ -175,6 +186,9 @@ snetd_env_kick_impl(snetd_env_t* env, int player) {
 
 	if (player_info->tranport_type == TRANSPORT_TYPE_CUTE_NET) {
 		cn_server_disconnect_client(impl->server, player_info->transport_handle, true);
+	} else if (player_info->tranport_type == TRANSPORT_TYPE_WEBTRANSPORT) {
+		char msg = player_info->transport_handle;
+		send_control_message(PORT_MSG_WEBTRANSPORT_DISCONNECT, &msg, sizeof(msg));
 	}
 }
 
@@ -474,7 +488,7 @@ main(int argc, const char* argv[]) {
 					}
 
 					switch (recv_buf.ptr[0]) {
-						case REQUEST_CONNECT_TOKEN: {
+						case PORT_CMD_REQUEST_CONNECT_TOKEN: {
 							env.allow_join = false;
 							env.rejection_reason = "default_reject";
 							if (env.num_players < SNETD_MAX_NUM_PLAYERS) {
@@ -506,15 +520,98 @@ main(int argc, const char* argv[]) {
 									connect_token
 								);
 
-								send_control_header(CONTROL_CONNECT_TOKEN, CN_CONNECT_TOKEN_SIZE + 1);
+								send_control_header(PORT_MSG_QUERY_RESPONSE, CN_CONNECT_TOKEN_SIZE + 1);
 								send_payload(&env.allow_join, 1);
 								send_payload(connect_token, sizeof(connect_token));
 							} else {
 								int reason_length = strlen(env.rejection_reason);
-								send_control_header(CONTROL_CONNECT_TOKEN, reason_length + 1);
+								send_control_header(PORT_MSG_QUERY_RESPONSE, reason_length + 1);
 								send_payload(&env.allow_join, 1);
 								send_payload(env.rejection_reason, reason_length);
 							}
+						} break;
+						case PORT_CMD_REQUEST_JOIN_PERMISSION: {
+							env.allow_join = false;
+							env.rejection_reason = "default_reject";
+							if (env.num_players < SNETD_MAX_NUM_PLAYERS) {
+								snetd->event(snetd_ctx, &(snetd_event_t){
+									.type = SNETD_EVENT_PLAYER_JOINING,
+									.player_joining = {
+										.username = recv_buf.ptr + 1,
+									},
+								});
+							} else {
+								env.rejection_reason = "server_full";
+							}
+
+							if (env.allow_join) {
+								send_control_header(PORT_MSG_QUERY_RESPONSE, 1);
+								send_payload(&env.allow_join, 1);
+							} else {
+								int reason_length = strlen(env.rejection_reason);
+								send_control_header(PORT_MSG_QUERY_RESPONSE, reason_length + 1);
+								send_payload(&env.allow_join, 1);
+								send_payload(env.rejection_reason, reason_length);
+							}
+						} break;
+						case PORT_CMD_WEBTRANSPORT_CONNECT: {
+							int player_index = -1;
+							if (env.num_players < SNETD_MAX_NUM_PLAYERS) {
+								// Find an empty slot to map this webtransport client
+								const char* username = sintern(recv_buf.ptr + 1);
+								// TODO: Existing player dedupe
+								for (player_index = 0; player_index < SNETD_MAX_NUM_PLAYERS; ++player_index) {
+									if (env.players[player_index].username == NULL) {
+										break;
+									}
+								}
+								env.players[player_index] = (player_info_t){
+									.username = username,
+									.tranport_type = TRANSPORT_TYPE_WEBTRANSPORT,
+									.transport_handle = player_index,
+								};
+								++env.num_players;
+
+								snetd->event(snetd_ctx, &(snetd_event_t){
+									.type = SNETD_EVENT_PLAYER_JOINED,
+									.player_joined = {
+										.username = username,
+										.player_index = player_index,
+									},
+								});
+							}
+
+							if (player_index >= 0) {
+								char resp[2] = { 1, player_index };
+								send_control_message(PORT_MSG_QUERY_RESPONSE, resp, sizeof(resp));
+							} else {
+								char resp = 0;
+								send_control_message(PORT_MSG_QUERY_RESPONSE, &resp, sizeof(resp));
+							}
+						} break;
+						case PORT_CMD_WEBTRANSPORT_DISCONNECT: {
+							int player_index = recv_buf.ptr[1];
+							snetd->event(snetd_ctx, &(snetd_event_t){
+								.type = SNETD_EVENT_PLAYER_LEFT,
+								.player_left = {
+									.player_index = player_index,
+								},
+							});
+
+							env.players[player_index].username = NULL;
+							if (--env.num_players == 0) {
+								disconnect_time = current_unix_time + connect_timeout_s;
+							}
+						} break;
+						case PORT_CMD_WEBTRANSPORT_MESSAGE: {
+							snetd->event(snetd_ctx, &(snetd_event_t){
+								.type = SNETD_EVENT_MESSAGE,
+								.message = {
+									.data = &recv_buf.ptr[2],
+									.size = cmd_size - 2,
+									.sender = recv_buf.ptr[1],
+								},
+							});
 						} break;
 						default: {
 							fprintf(stderr, "Invalid command type: %d\r\n", recv_buf.ptr[0]);
