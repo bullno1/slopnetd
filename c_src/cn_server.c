@@ -479,14 +479,16 @@ main(int argc, const char* argv[]) {
 					} break;
 					case CN_SERVER_EVENT_TYPE_PAYLOAD_PACKET: {
 						int player_index = env.cn_to_snet[event.u.disconnected.client_index];
-						snetd->event(snetd_ctx, &(snetd_event_t){
-							.type = SNETD_EVENT_MESSAGE,
-							.message = {
-								.sender = player_index,
-								.data = event.u.payload_packet.data,
-								.size = event.u.payload_packet.size,
-							},
-						});
+						if (env.players[player_index].tranport_type == TRANSPORT_TYPE_CUTE_NET) {
+							snetd->event(snetd_ctx, &(snetd_event_t){
+								.type = SNETD_EVENT_MESSAGE,
+								.message = {
+									.sender = player_index,
+									.data = event.u.payload_packet.data,
+									.size = event.u.payload_packet.size,
+								},
+							});
+						}
 						cn_server_free_packet(server, event.u.payload_packet.client_index, event.u.payload_packet.data);
 					} break;
 				}
@@ -621,12 +623,17 @@ main(int argc, const char* argv[]) {
 							}
 						} break;
 						case PORT_CMD_WEBTRANSPORT_MESSAGE: {
+							int player_index = recv_buf.ptr[1];
+							if (env.players[player_index].tranport_type != TRANSPORT_TYPE_WEBTRANSPORT) {
+								continue;
+							}
+
 							snetd->event(snetd_ctx, &(snetd_event_t){
 								.type = SNETD_EVENT_MESSAGE,
 								.message = {
 									.data = &recv_buf.ptr[2],
 									.size = cmd_size - 2,
-									.sender = recv_buf.ptr[1],
+									.sender = player_index,
 								},
 							});
 						} break;
