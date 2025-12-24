@@ -49,6 +49,7 @@ init(#{ method := ~"POST" } = Req, create) ->
 	end;
 init(#{ method := ~"POST" } = Req, join) ->
 	maybe
+		#{ transport := Transport } = cowboy_req:match_qs([{transport, nonempty}], Req),
 		{ok, #{ id := UserId }} ?= snetd_auth:auth_req(Req),
 		BodyOpts = #{ length => 1024, period => 5000 },
 		{ok, Body, Req2} ?= snetd_utils:read_body(Req, BodyOpts),
@@ -56,10 +57,23 @@ init(#{ method := ~"POST" } = Req, join) ->
 			{ok, #{ ~"game" := GameNameIn }} -> {ok, GameNameIn};
 			{error, _} -> {return, snetd_utils:reply_with_text(400, ~"invalid_token", Req2)}
 		end,
-		{ok, ConnectToken} ?= case snetd_game:request_connect_token(GameName, UserId) of
-			{ok, _} = Granted -> Granted;
-			{error, Reason} ->
-				{return, snetd_utils:reply_with_text(403, Reason, Req2)}
+
+		{ok, ConnectToken} ?= case Transport of
+			~"cute_net" ->
+				case snetd_game:request_connect_token(GameName, UserId) of
+					{ok, _} = Granted -> Granted;
+					{error, Reason} ->
+						{return, snetd_utils:reply_with_text(403, Reason, Req2)}
+				end;
+			~"webtransport" ->
+				case ok of
+					ok ->
+						{ok, generate_webtransport_token(GameName, UserId)};
+					{error, Reason} ->
+						{return, snetd_utils:reply_with_text(403, Reason, Req2)}
+				end;
+			_ ->
+				{return, snetd_utils:reply_with_text(400, ~"invalid_transport", Req2)}
 		end,
 		{ ok
 		, cowboy_req:reply(
@@ -99,3 +113,46 @@ init(#{ method := ~"OPTIONS" } = Req, _) ->
 	{ok, snetd_utils:cors(Req, CorsOpts), []};
 init(Req, State) ->
 	{ok, cowboy_req:reply(400, Req), State}.
+
+%% Private
+
+generate_webtransport_token(GameName, UserId) ->
+	{ok, #{
+		connect_timeout_s := ConnectTimeoutS
+	}} = application:get_env(slopnetd, game),
+	{ok, #{ signing_algorithm := SigningAlg }} = application:get_env(slopnetd, jwt),
+	#{ preferred_key := {Kid, Key} } = keymaker:info({slopnetd, jwt}),
+	Claims = #{
+		~"sub" => UserId,
+		~"game" => GameName,
+		~"exp" => erlang:system_time(second) + ConnectTimeoutS
+	},
+	SigningOpts = #{
+		kid => Kid,
+		key => Key,
+		algorithm => SigningAlg
+	},
+	AuthToken = jwt:issue(Claims, SigningOpts),
+	Qs = uri_string:compose_query([{~"token", AuthToken}]),
+
+	{ok, #{ listen_port := QuicPort }} = application:get_env(slopnetd, quic),
+	ConnectUrls = [
+		iolist_to_binary(uri_string:recompose(#{
+			scheme => ~"https",
+			host => inet:ntoa(Address),
+			port => QuicPort,
+			path => ~"/snet/game/wt",
+			query => Qs
+		}))
+		|| Address <- snetd_utils:get_addresses()
+	],
+
+	#{ keys := Keys } = keymaker:info({slopnetd, quic}),
+	CertHashes = [
+		base64:encode(crypto:hash(sha256, CertDer))
+		|| _KeyId := {CertDer, _KeyDer} <- Keys
+	],
+	json:encode(#{
+		~"urls" => ConnectUrls,
+		~"serverCertificateHashes" => CertHashes
+	}).

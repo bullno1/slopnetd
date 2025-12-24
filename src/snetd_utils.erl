@@ -5,7 +5,8 @@
 	reply_with_json/3,
 	read_body/2,
 	read_body_json/2,
-	cors/2
+	cors/2,
+	get_addresses/0
 ]).
 -export_type([cors_options/0]).
 -include_lib("kernel/include/logger.hrl").
@@ -95,6 +96,11 @@ handle_early_return({error, bad_request, Req}, _) ->
 handle_early_return(Value, Req) ->
 	?LOG_ERROR(#{ what => unknown_return, error => Value }),
 	{ok, reply_with_text(500, ~"internal_error", Req), []}.
+
+-spec get_addresses() -> [inet:ip_address()].
+get_addresses() ->
+	{ok, Addresses} = inet:getifaddrs(),
+	[proplists:get_value(addr, Props) || {_Interface, Props} <- Addresses].
 
 %% Private
 

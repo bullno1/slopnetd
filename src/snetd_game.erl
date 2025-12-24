@@ -96,11 +96,7 @@ init({
 		module := {ModulePath, _ModuleExtra},
 		connect_timeout_s := ConnectTimeoutS
 	}} = application:get_env(slopnetd, game),
-
-
-	{ok, Addresses} = inet:getifaddrs(),
-	Addrs = [proplists:get_value(addr, Props) || {_Interface, Props} <- Addresses],
-
+	Addresses = snetd_utils:get_addresses(),
 	CnServer = erlang:open_port(
 		{spawn_executable, filename:join(code:priv_dir(slopnetd), "bin/cn_server")},
 		[ {packet, 2}
@@ -108,7 +104,7 @@ init({
 			"--created-by", UserId,
 			"--connect-timeout-s", integer_to_binary(ConnectTimeoutS),
 			"--max-num-players", integer_to_binary(MaxNumPlayers)
-		  ] ++ lists:append([["--server-address",  inet:ntoa(Addr)] || Addr <- Addrs ])
+		  ] ++ lists:append([["--server-address",  inet:ntoa(Addr)] || Addr <- Addresses ])
 		    ++ [resolve_module_path(ModulePath)]
 		  }
 		, exit_status

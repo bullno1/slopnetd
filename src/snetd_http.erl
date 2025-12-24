@@ -32,6 +32,7 @@ routes() ->
 	++ snetd_auth_itchio:routes()
 	++ snetd_auth_cookie:routes()
 	++ snetd_lobby:routes()
+	++ snetd_wt_conn:routes()
 	++ [
 		{"/assets/[...]", cowboy_static, {priv_dir, slopnetd, "www/assets", [
 			{mimetypes, cow_mimetypes, all}

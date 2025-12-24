@@ -15,7 +15,11 @@ child_spec() ->
 
 start_link() ->
 	ProtoOpts = #{
-		env => #{dispatch => {persistent_term, snetd_http}}
+		env => #{dispatch => {persistent_term, snetd_http}},
+		enable_connect_protocol => true,
+		h3_datagram => true,
+		enable_webtransport => true,
+		wt_max_sessions => 1
 	},
 	#{ preferred_key := {_, {CertDer, KeyDer}}} = keymaker:info({slopnetd, quic}),
 	{ok, QuicOpts} = application:get_env(slopnetd, quic),
@@ -23,9 +27,7 @@ start_link() ->
 	snetd_quic:start_link({local, ?MODULE}, ?MODULE, ProtoOpts, TransportOpts).
 
 generate_quic_cert(_) ->
-	{ok, Addresses} = inet:getifaddrs(),
-	Addrs = [proplists:get_value(addr, Props) || {_Interface, Props} <- Addresses],
-	snetd_crypto:generate_cert(Addrs).
+	snetd_crypto:generate_cert(snetd_utils:get_addresses()).
 
 rotate_cert({CertDer, KeyDer}, _) ->
 	{ok, QuicOpts} = application:get_env(slopnetd, quic),
