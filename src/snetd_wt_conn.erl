@@ -11,7 +11,7 @@
 	slot :: non_neg_integer(),
 	idle_timeout_ms :: integer(),
 	idle_timer :: reference(),
-	last_message_timestamp_ms = 0 :: integer()
+	last_message_timestamp_ms :: integer()
 }).
 -include_lib("kernel/include/logger.hrl").
 
@@ -56,7 +56,8 @@ init(#{ method := ~"CONNECT" } = Req, _) ->
 			port = Port,
 			slot = Slot,
 			idle_timeout_ms = IdleTimeoutMs,
-			idle_timer = erlang:start_timer(IdleTimeoutMs, self(), idle_timeout)
+			idle_timer = erlang:start_timer(IdleTimeoutMs, self(), idle_timeout),
+			last_message_timestamp_ms = erlang:monotonic_time(millisecond)
 		},
 		{cowboy_webtransport, Req, State, Opts}
 	else

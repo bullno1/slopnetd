@@ -64,6 +64,7 @@ typedef enum {
 	PORT_CMD_WEBTRANSPORT_CONNECT,
 	PORT_CMD_WEBTRANSPORT_DISCONNECT,
 	PORT_CMD_WEBTRANSPORT_MESSAGE,
+	PORT_CMD_SERVER_INFO,
 } request_message_type_t;
 
 typedef enum {
@@ -636,6 +637,28 @@ main(int argc, const char* argv[]) {
 									.sender = player_index,
 								},
 							});
+						} break;
+						case PORT_CMD_SERVER_INFO: {
+							int message_size = 0;
+							for (int i = 0; i < SNETD_MAX_NUM_PLAYERS; ++i) {
+								if (env.players[i].username != NULL) {
+									message_size += 1;  // Id
+									message_size += 1;  // Transport
+									message_size += 1;  // Name length
+									message_size += strlen(env.players[i].username);  // Name length
+								}
+							}
+
+							send_control_header(PORT_MSG_QUERY_RESPONSE, message_size);
+							for (int i = 0; i < SNETD_MAX_NUM_PLAYERS; ++i) {
+								if (env.players[i].username != NULL) {
+									send_payload(&(char){ i }, sizeof(char));
+									send_payload(&(char){ env.players[i].tranport_type }, sizeof(char));
+									int name_len = strlen(env.players[i].username);
+									send_payload(&(char){ name_len }, sizeof(char));
+									send_payload(env.players[i].username, name_len);
+								}
+							}
 						} break;
 						default: {
 							fprintf(stderr, "Invalid command type: %d\r\n", recv_buf.ptr[0]);

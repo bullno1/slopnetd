@@ -3,6 +3,7 @@
 -export([
 	start_link/2,
 	info/1,
+	server_info/1,
 	make_join_token/1,
 	decode_join_token/1,
 	request_connect_token/2,
@@ -18,6 +19,7 @@
 -define(PORT_CMD_WEBTRANSPORT_CONNECT, 2).
 -define(PORT_CMD_WEBTRANSPORT_DISCONNECT, 3).
 -define(PORT_CMD_WEBTRANSPORT_MESSAGE, 4).
+-define(PORT_CMD_SERVER_INFO, 5).
 
 -define(PORT_MSG_LOG, 0).
 -define(PORT_MSG_QUERY_RESPONSE, 1).
@@ -54,6 +56,10 @@ start_link(UserId, Params) ->
 -spec info(gen_server:server_ref()) -> info().
 info(Server) ->
 	gen_server:call(Server, info).
+
+-spec server_info(gen_server:server_ref()) -> map().
+server_info(Server) ->
+	decode_server_info(gen_server:call(Server, server_info)).
 
 -spec make_join_token(binary()) -> binary().
 make_join_token(GameName) ->
@@ -159,6 +165,18 @@ handle_call(
 		data => Data
 	},
 	{reply, Result, State};
+handle_call(
+	server_info,
+	_From,
+	#state{cn_server = CnServer} = State
+) ->
+	port_command(CnServer, <<?PORT_CMD_SERVER_INFO>>),
+	receive
+		{CnServer, {data, <<?PORT_MSG_QUERY_RESPONSE, ServerInfoData/binary>>}} ->
+			{reply, ServerInfoData, State}
+	after 5000 ->
+		exit(port_timeout)
+	end;
 handle_call(
 	{request_connect_token, Username},
 	_From,
@@ -270,3 +288,20 @@ handle_port_message(
 handle_port_message(<<?PORT_MSG_LOG, Log/binary>>, State) ->
 	?LOG_DEBUG(#{ what => server_log, message => Log }),
 	State.
+
+decode_server_info(ServerInfoData) ->
+	decode_server_info(ServerInfoData, #{}).
+
+decode_server_info(<<>>, Map) ->
+	Map;
+decode_server_info(<<Id, Transport, NameLen, Name:NameLen/binary, Rest/binary>>, Acc) ->
+	NewAcc = Acc#{
+		Id => #{
+			name => Name,
+			transport => case Transport of
+				0 -> cute_net;
+				1 -> webtransport
+			end
+		}
+	},
+	decode_server_info(Rest, NewAcc).
