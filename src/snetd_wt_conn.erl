@@ -8,7 +8,10 @@
 ]).
 -record(state, {
 	port :: port(),
-	slot :: non_neg_integer()
+	slot :: non_neg_integer(),
+	idle_timeout_ms :: integer(),
+	idle_timer :: reference(),
+	last_message_timestamp_ms = 0 :: integer()
 }).
 -include_lib("kernel/include/logger.hrl").
 
@@ -47,9 +50,13 @@ init(#{ method := ~"CONNECT" } = Req, _) ->
 				{return, snetd_utils:reply_with_text(403, ~"server_full", Req)}
 		end,
 		Opts = #{ req_filter => fun (_) -> #{} end },
+		{ok, #{ connect_timeout_s := IdleTimeoutS }} = application:get_env(slopnetd, game),
+		IdleTimeoutMs = IdleTimeoutS * 1000,
 		State = #state{
 			port = Port,
-			slot = Slot
+			slot = Slot,
+			idle_timeout_ms = IdleTimeoutMs,
+			idle_timer = erlang:start_timer(IdleTimeoutMs, self(), idle_timeout)
 		},
 		{cowboy_webtransport, Req, State, Opts}
 	else
@@ -63,11 +70,29 @@ webtransport_handle(
 	#state{ port = Port, slot = Slot} = State
 ) ->
 	port_command(Port, <<4, Slot, Datagram/binary>>),
-	{[], State};
+	{[], State#state{ last_message_timestamp_ms = erlang:monotonic_time(millisecond) }};
 webtransport_handle(Event, State) ->
 	?LOG_WARNING(#{ what => ignored_event, event => Event }),
 	{[], State}.
 
+webtransport_info(
+	{timeout, TimerRef, idle_timeout},
+	#state{
+		idle_timer = TimerRef,
+		idle_timeout_ms = IdleTimeoutMs,
+		last_message_timestamp_ms = LastMessageTimestampMs
+	} = State
+) ->
+	CurrentTimeMs = erlang:monotonic_time(millisecond),
+	case (CurrentTimeMs - LastMessageTimestampMs) >= IdleTimeoutMs of
+		true ->
+			{[close], State};
+		false ->
+			NewState = State#state{
+				idle_timer = erlang:start_timer(IdleTimeoutMs, self(), idle_timeout)
+			},
+			{[], NewState}
+	end;
 webtransport_info({snetd_game, message, 0, Msg}, State) ->
 	{[{send, datagram, Msg}], State};
 webtransport_info({snetd_game, disconnect}, State) ->
