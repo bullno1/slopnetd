@@ -24,6 +24,8 @@
 
 #define SNETD_MAX_NUM_PLAYERS 32
 #define SNETD_MAX_NUM_ADDRESSES 16
+#define SNETD_USER_ALREADY_CONNECTED -2
+#define SNETD_SERVER_FULL -1
 
 typedef char endpoint_str_t[sizeof("256.256.256.256:65536")];
 
@@ -209,6 +211,29 @@ snetd_env_forbid_join_impl(snetd_env_t* env, const char* reason) {
 	snetd_env_impl_t* impl = (snetd_env_impl_t*)env;
 	impl->allow_join = false;
 	impl->rejection_reason = reason;
+}
+
+static int
+alloc_player_slot(snetd_env_impl_t* env, const char* username) {
+	int i, free_slot;
+	free_slot = SNETD_SERVER_FULL;
+	for (i = 0; i < SNETD_MAX_NUM_PLAYERS; ++i) {
+		if (env->players[i].username == username) {  // username is interned
+			// User is already connected
+			return SNETD_USER_ALREADY_CONNECTED;
+		}
+
+		if (env->players[i].username == NULL && free_slot < 0) {
+			free_slot = i;
+			// Always scan all slots for duplicates before allocation
+		}
+	}
+
+	if (free_slot >= 0) {
+		++(env->num_players);
+	}
+
+	return free_slot;
 }
 
 int
@@ -413,32 +438,33 @@ main(int argc, const char* argv[]) {
 			while (cn_server_pop_event(server, &event)) {
 				switch (event.type) {
 					case CN_SERVER_EVENT_TYPE_NEW_CONNECTION: {
-						// Find an empty slot to map this cute_net client
 						const char* username = (const char*)(uintptr_t)event.u.new_connection.client_id;
-						int player_index;
-						for (player_index = 0; player_index < SNETD_MAX_NUM_PLAYERS; ++player_index) {
-							if (env.players[player_index].username == NULL) {
-								break;
-							}
-						}
-						env.players[player_index] = (player_info_t){
-							.username = username,
-							.tranport_type = TRANSPORT_TYPE_CUTE_NET,
-							.transport_handle = event.u.new_connection.client_index,
-						};
-						++env.num_players;
-						env.cn_to_snet[event.u.new_connection.client_index] = player_index;
-
-						snetd->event(snetd_ctx, &(snetd_event_t){
-							.type = SNETD_EVENT_PLAYER_JOINED,
-							.player_joined = {
+						int player_index = alloc_player_slot(&env, username);
+						if (player_index >= 0) {
+							env.players[player_index] = (player_info_t){
 								.username = username,
-								.player_index = player_index,
-							},
-						});
+								.tranport_type = TRANSPORT_TYPE_CUTE_NET,
+								.transport_handle = event.u.new_connection.client_index,
+							};
+							env.cn_to_snet[event.u.new_connection.client_index] = player_index;
+
+							snetd->event(snetd_ctx, &(snetd_event_t){
+								.type = SNETD_EVENT_PLAYER_JOINED,
+								.player_joined = {
+									.username = username,
+									.player_index = player_index,
+								},
+							});
+						} else {
+							cn_server_disconnect_client(server, event.u.new_connection.client_index, true);
+						}
 					} break;
 					case CN_SERVER_EVENT_TYPE_DISCONNECTED: {
 						int player_index = env.cn_to_snet[event.u.disconnected.client_index];
+						if (env.players[player_index].tranport_type != TRANSPORT_TYPE_CUTE_NET) {
+							continue;
+						}
+
 						snetd->event(snetd_ctx, &(snetd_event_t){
 							.type = SNETD_EVENT_PLAYER_LEFT,
 							.player_left = {
@@ -555,23 +581,14 @@ main(int argc, const char* argv[]) {
 							}
 						} break;
 						case PORT_CMD_WEBTRANSPORT_CONNECT: {
-							int player_index = -1;
-							if (env.num_players < SNETD_MAX_NUM_PLAYERS) {
-								// Find an empty slot to map this webtransport client
-								const char* username = sintern(recv_buf.ptr + 1);
-								// TODO: Existing player dedupe
-								for (player_index = 0; player_index < SNETD_MAX_NUM_PLAYERS; ++player_index) {
-									if (env.players[player_index].username == NULL) {
-										break;
-									}
-								}
+							const char* username = sintern(recv_buf.ptr + 1);
+							int player_index = alloc_player_slot(&env, username);
+							if (player_index >= 0) {
 								env.players[player_index] = (player_info_t){
 									.username = username,
 									.tranport_type = TRANSPORT_TYPE_WEBTRANSPORT,
 									.transport_handle = player_index,
 								};
-								++env.num_players;
-
 								snetd->event(snetd_ctx, &(snetd_event_t){
 									.type = SNETD_EVENT_PLAYER_JOINED,
 									.player_joined = {
@@ -579,18 +596,18 @@ main(int argc, const char* argv[]) {
 										.player_index = player_index,
 									},
 								});
-							}
-
-							if (player_index >= 0) {
 								char resp[2] = { 1, player_index };
 								send_control_message(PORT_MSG_QUERY_RESPONSE, resp, sizeof(resp));
 							} else {
-								char resp = 0;
-								send_control_message(PORT_MSG_QUERY_RESPONSE, &resp, sizeof(resp));
+								send_control_message(PORT_MSG_QUERY_RESPONSE, &(char){ 0 }, 1);
 							}
 						} break;
 						case PORT_CMD_WEBTRANSPORT_DISCONNECT: {
 							int player_index = recv_buf.ptr[1];
+							if (env.players[player_index].tranport_type != TRANSPORT_TYPE_WEBTRANSPORT) {
+								continue;
+							}
+
 							snetd->event(snetd_ctx, &(snetd_event_t){
 								.type = SNETD_EVENT_PLAYER_LEFT,
 								.player_left = {
