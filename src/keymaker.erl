@@ -15,9 +15,12 @@
 }.
 -type store_options() :: #{
 	ttl_s := non_neg_integer(),
-	generator := { key_gen_fun(), Options :: term() }
+	generator := { key_gen_fun(), Options :: term() },
+	on_rotate => { rotate_fun(), Options :: term() }
 }.
 -type key_gen_fun() :: fun((Options :: term()) -> term()).
+-type rotate_fun() :: fun((Key :: term(), Options :: term()) -> ok).
+
 -type store_info() :: #{
 	preferred_key := {key_id(), term()},
 	keys := #{ KeyId :: key_id() => Info :: term() }
@@ -39,7 +42,7 @@ info(Store) ->
 	Keys = dets:select(?MODULE, [{{{Store,'$1'},'$2'},[],[{{'$1','$2'}}]}]),
 	{KeyId, Key} = lists:foldl(fun max/2, {0, []}, Keys),
 	#{ preferred_key => { integer_to_binary(KeyId), Key}
-	 , keys => maps:from_list([{integer_to_binary(Kid), Data} || {Kid, Data} <- Keys])
+	 , keys => #{ integer_to_binary(Kid) => Data || {Kid, Data} <- Keys}
 	 }.
 
 -spec new_key(term()) -> ok.
@@ -62,11 +65,18 @@ init(#{ path := Path, stores := Stores }) ->
 
 handle_call({new_key, StoreName}, _From, #state{ table = Tab, stores = Stores } = State) ->
 	case maps:find(StoreName, Stores) of
-		{ok, #{ generator := { KeyGenFun, KeyGenOpts } }} ->
+		{ok, #{ generator := { KeyGenFun, KeyGenOpts } } = Store} ->
 			?LOG_INFO("Generating a new key for store ~p", [StoreName]),
 			CurrentTime = erlang:system_time(second),
 			Key = KeyGenFun(KeyGenOpts),
 			dets:insert(Tab, {{StoreName, CurrentTime}, Key}),
+			case Store of
+				#{on_rotate := {OnRotate, RotateOpts}} ->
+					?LOG_INFO("Rotating key for store ~p", [StoreName]),
+					_ = catch OnRotate(Key, RotateOpts);
+				_ ->
+					ok
+			end,
 			dets:sync(Tab);
 		error ->
 			ok
@@ -95,7 +105,7 @@ refresh_all(#state{ stores = Stores } = State) ->
 
 refresh_store(StoreName, #state{ table = Tab, stores = Stores } = State) ->
 	case maps:find(StoreName, Stores) of
-		{ok, #{ ttl_s := TTL, generator := { KeyGenFun, KeyGenOpts } }} ->
+		{ok, #{ ttl_s := TTL, generator := { KeyGenFun, KeyGenOpts } } = Store} ->
 			CurrentTime = erlang:system_time(second),
 
 			?LOG_INFO("Cleaning up store ~p", [StoreName]),
@@ -112,7 +122,14 @@ refresh_store(StoreName, #state{ table = Tab, stores = Stores } = State) ->
 				true ->
 					?LOG_INFO("Generating a new key for store ~p", [StoreName]),
 					Key = KeyGenFun(KeyGenOpts),
-					dets:insert(Tab, {{StoreName, CurrentTime}, Key});
+					dets:insert(Tab, {{StoreName, CurrentTime}, Key}),
+					case Store of
+						#{on_rotate := {OnRotate, RotateOpts}} ->
+							?LOG_INFO("Rotating key for store ~p", [StoreName]),
+							_ = catch OnRotate(Key, RotateOpts);
+						_ ->
+							ok
+					end;
 				false ->
 					ok
 			end,

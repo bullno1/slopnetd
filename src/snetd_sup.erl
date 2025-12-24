@@ -15,6 +15,7 @@ init([]) ->
 		#{id => tabkeeper, start => {tabkeeper, start_link, []}},
 		#{id => lproc_sup, start=> {lproc_sup, start_link, []}},
 		#{id => keymaker, start => {keymaker, start_link, [KeyMakerOpts]}},
+		snetd_h3:child_spec(),
 		snetd_game_sup:child_spec()
 	],
 	{ok, {SupFlags, ChildSpecs}}.

@@ -11,10 +11,10 @@ make_pkcs12(_Cert, _Key) ->
        erlang:nif_error(not_loaded).
 
 -spec generate_cert(IpAddresses) -> { Cert, Key } when
-	IpAddresses :: inet:ip_address(),
+	IpAddresses :: [inet:ip_address()],
 	Cert :: public_key:der_encoded(),
 	Key :: public_key:der_encoded().
-generate_cert(_IpAddresses) ->
+generate_cert(IpAddresses) ->
 	From = os:timestamp(),
 	To = add_seconds(From, 7 * 86400),
 	Key = public_key:generate_key({namedCurve, ?secp256r1}),
@@ -30,11 +30,12 @@ generate_cert(_IpAddresses) ->
 		},
 		subjectPublicKey = #'ECPoint'{ point = Key#'ECPrivateKey'.publicKey }
 	},
+	Addresses = [{iPAddress, tuple_to_list(Addr)} || Addr <- IpAddresses],
 	Extensions = [
 		#'Extension'{
 			extnID = ?'id-ce-subjectAltName',
 			critical = false,
-			extnValue = [{dNSName, "localhost"}, {iPAddress, <<127,0,0,1>>}]
+			extnValue = [{dNSName, "localhost"} | Addresses]
 		},
 		#'Extension'{
 			extnID = ?'id-ce-basicConstraints',

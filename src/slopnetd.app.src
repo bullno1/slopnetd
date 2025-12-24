@@ -35,11 +35,17 @@
 				{slopnetd, jwt} => #{
 					ttl_s => 604800,
 					generator => { fun crypto:strong_rand_bytes/1, 16 }
+				},
+				{slopnetd, quic} => #{
+					ttl_s => 604800,
+					generator => { fun snetd_h3:generate_quic_cert/1, [] },
+					on_rotate => { fun snetd_h3:rotate_cert/2, [] }
 				}
 			}
 		}},
 		{quic, #{
-			transport_opts => [{port, 8081}]
+			listen_port => 8081,
+			num_acceptors => 2
 		}},
 		{cors, #{
 			allowed_origins => '*',  % Change to list of origins to restrict
