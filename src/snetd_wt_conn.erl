@@ -3,17 +3,27 @@
 -export([routes/0]).
 -export([
 	init/2,
+	webtransport_init/1,
 	webtransport_handle/2,
 	webtransport_info/2
 ]).
--record(state, {
+-include_lib("kernel/include/logger.hrl").
+-record(pending, {
+	game :: binary(),
+	username :: binary()
+}).
+-record(established, {
 	port :: port(),
 	slot :: non_neg_integer(),
+	reliable_stream :: integer()
+}).
+
+-record(state, {
+	server_conn :: #pending{} | #established{},
 	idle_timeout_ms :: integer(),
 	idle_timer :: reference(),
 	last_message_timestamp_ms :: integer()
 }).
--include_lib("kernel/include/logger.hrl").
 
 %% Public
 
@@ -43,22 +53,16 @@ init(#{ method := ~"CONNECT" } = Req, _) ->
 			{error, _} ->
 				{return, snetd_utils:reply_with_text(403, ~"invalid_token", Req)}
 		end,
-		{ok, Port, Slot} ?= case snetd_game:connect_webtransport(GameName, Username) of
-			{ok, _, _} = Connected ->
-				Connected;
-			{error, _} ->
-				{return, snetd_utils:reply_with_text(403, ~"server_full", Req)}
-		end,
 		Opts = #{ req_filter => fun (_) -> #{} end },
 		{ok, #{ connect_timeout_s := IdleTimeoutS }} = application:get_env(slopnetd, game),
 		IdleTimeoutMs = IdleTimeoutS * 1000,
 		State = #state{
-			port = Port,
-			slot = Slot,
+			server_conn = #pending{ game = GameName, username = Username },
 			idle_timeout_ms = IdleTimeoutMs,
 			idle_timer = erlang:start_timer(IdleTimeoutMs, self(), idle_timeout),
 			last_message_timestamp_ms = erlang:monotonic_time(millisecond)
 		},
+		logger:update_process_metadata(#{ username => Username, game => GameName }),
 		{cowboy_webtransport, Req, State, Opts}
 	else
 		EarlyReturn -> snetd_utils:handle_early_return(EarlyReturn, Req)
@@ -66,12 +70,45 @@ init(#{ method := ~"CONNECT" } = Req, _) ->
 init(Req, _) ->
 	{ok, cowboy_req:reply(404, Req), []}.
 
+webtransport_init(State) ->
+	{[{open_stream, reliable, bidi, []}], State}.
+
+webtransport_handle(
+	{opened_stream_id, reliable, StreamId},
+	#state{
+		server_conn = #pending{ game = GameName, username = Username }
+	} = State
+) ->
+	% Only connect to the server after the reliable channel is setup so that if
+	% the server send data immediately on connect, we are prepared
+	case snetd_game:connect_webtransport(GameName, Username) of
+		{ok, Port, Slot} ->
+			NewState = State#state{
+				server_conn = #established{
+					port = Port,
+					slot = Slot,
+					reliable_stream = StreamId
+				}
+			},
+			{[], NewState};
+		{error, _} ->
+			{[close], State}
+	end;
+webtransport_handle(
+	{datagram, _Datagram},
+	#state{ server_conn = #pending{} } = State
+) ->
+	?LOG_WARNING(#{ what => early_datagram }),
+	{[], State};
 webtransport_handle(
 	{datagram, Datagram},
-	#state{ port = Port, slot = Slot} = State
+	#state{ server_conn = #established{ port = Port, slot = Slot } } = State
 ) ->
 	port_command(Port, <<4, Slot, Datagram/binary>>),
-	{[], State#state{ last_message_timestamp_ms = erlang:monotonic_time(millisecond) }};
+	NewState = State#state{
+		last_message_timestamp_ms = erlang:monotonic_time(millisecond)
+	},
+	{[], NewState};
 webtransport_handle(Event, State) ->
 	?LOG_WARNING(#{ what => ignored_event, event => Event }),
 	{[], State}.
