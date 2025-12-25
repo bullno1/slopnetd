@@ -80,6 +80,16 @@ snetd_realloc(snetd_env_t* env, void* ptr, size_t size) {
 	return env->realloc(env, ptr, size);
 }
 
+static inline void*
+snetd_malloc(snetd_env_t* env, size_t size) {
+	return snetd_realloc(env, NULL, size);
+}
+
+static inline void
+snetd_free(snetd_env_t* env, void* ptr) {
+	snetd_realloc(env, ptr, 0);
+}
+
 static inline void
 snetd_log(snetd_env_t* env, const char* message) {
 	env->log(env, message);

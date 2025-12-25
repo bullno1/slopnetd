@@ -1,3 +1,5 @@
+include_directories("../include")
+
 add_executable(cn_server "cn_server.c" "libs.c")
 target_link_libraries(cn_server)
 find_library(MATH_LIBRARY m)
