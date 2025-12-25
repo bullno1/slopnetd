@@ -142,6 +142,12 @@ webtransport_info(
 	end;
 webtransport_info({snetd_game, message, 0, Msg}, State) ->
 	{[{send, datagram, Msg}], State};
+webtransport_info(
+	{snetd_game, message, 1, Msg},
+	#state{ server_conn = #established{ reliable_stream = Stream } } = State
+) ->
+	MsgLen = byte_size(Msg),
+	{[{send, Stream, [<<MsgLen:16/unsigned-little>>, Msg]}], State};
 webtransport_info({snetd_game, disconnect}, State) ->
 	{[close], State};
 webtransport_info(Msg, State) ->

@@ -30,6 +30,7 @@ event(void* userdata, const snetd_event_t* event) {
 			break;
 		case SNETD_EVENT_PLAYER_JOINED:
 			snetd_log(env, event->player_joined.username);
+			snetd_send(env, event->player_joined.player_index, "Welcome", sizeof("Welcome") - 1, true);
 			break;
 		case SNETD_EVENT_PLAYER_LEFT:
 			break;
