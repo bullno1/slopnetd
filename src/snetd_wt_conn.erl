@@ -95,6 +95,15 @@ webtransport_handle(
 			{[close], State}
 	end;
 webtransport_handle(
+	{datagram, ~""},
+	#state{} = State
+) ->
+	% Keep alive
+	NewState = State#state{
+		last_message_timestamp_ms = erlang:monotonic_time(millisecond)
+	},
+	{[], NewState};
+webtransport_handle(
 	{datagram, _Datagram},
 	#state{ server_conn = #pending{} } = State
 ) ->
