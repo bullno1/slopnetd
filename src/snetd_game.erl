@@ -13,18 +13,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 -export_type([params/0, info/0]).
 -include_lib("kernel/include/logger.hrl").
-
--define(PORT_CMD_REQUEST_CONNECT_TOKEN, 0).
--define(PORT_CMD_REQUEST_JOIN_PERMISSION, 1).
--define(PORT_CMD_WEBTRANSPORT_CONNECT, 2).
--define(PORT_CMD_WEBTRANSPORT_DISCONNECT, 3).
--define(PORT_CMD_WEBTRANSPORT_MESSAGE, 4).
--define(PORT_CMD_SERVER_INFO, 5).
-
--define(PORT_MSG_LOG, 0).
--define(PORT_MSG_QUERY_RESPONSE, 1).
--define(PORT_MSG_WEBTRANSPORT_SEND, 2).
--define(PORT_MSG_WEBTRANSPORT_DISCONNECT, 3).
+-include("snetd_port_commands.hrl").
 
 -type params() :: #{
 	visibility := public | private,

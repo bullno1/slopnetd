@@ -8,6 +8,7 @@
 	webtransport_info/2
 ]).
 -include_lib("kernel/include/logger.hrl").
+-include("snetd_port_commands.hrl").
 -record(pending, {
 	game :: binary(),
 	username :: binary()
@@ -20,6 +21,7 @@
 
 -record(state, {
 	server_conn :: #pending{} | #established{},
+	reliable_buffer = ~"" :: binary(),
 	idle_timeout_ms :: integer(),
 	idle_timer :: reference(),
 	last_message_timestamp_ms :: integer()
@@ -113,11 +115,16 @@ webtransport_handle(
 	{datagram, Datagram},
 	#state{ server_conn = #established{ port = Port, slot = Slot } } = State
 ) ->
-	port_command(Port, <<4, Slot, Datagram/binary>>),
+	port_command(Port, <<?PORT_CMD_WEBTRANSPORT_MESSAGE, Slot, Datagram/binary>>),
 	NewState = State#state{
 		last_message_timestamp_ms = erlang:monotonic_time(millisecond)
 	},
 	{[], NewState};
+webtransport_handle(
+	{stream_data, Stream, _, Data},
+	#state{ server_conn = #established{ reliable_stream = Stream } } = State
+) ->
+	{[], process_reliable(Data, State)};
 webtransport_handle(Event, State) ->
 	?LOG_WARNING(#{ what => ignored_event, event => Event }),
 	{[], State}.
@@ -153,3 +160,21 @@ webtransport_info({snetd_game, disconnect}, State) ->
 webtransport_info(Msg, State) ->
 	?LOG_WARNING(#{ what => unknown_message, message => Msg }),
 	{[], State}.
+
+%% Private
+
+process_reliable(
+	Chunk,
+	#state{ server_conn = Conn, reliable_buffer = Buffer } = State
+) ->
+	LeftOver = process_reliable1(<<Buffer/binary, Chunk/binary>>, Conn),
+	State#state{ reliable_buffer = LeftOver }.
+
+process_reliable1(
+	<<Length:16/unsigned-little, Msg:Length/binary, Rest/binary>>,
+	#established{ port = Port, slot = Slot } = Conn
+) ->
+	port_command(Port, <<?PORT_CMD_WEBTRANSPORT_MESSAGE, Slot, Msg/binary>>),
+	process_reliable1(Rest, Conn);
+process_reliable1(LeftOver, _Conn) ->
+	LeftOver.
